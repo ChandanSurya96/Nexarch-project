@@ -95,7 +95,7 @@ GET    /api/v1/portfolios/:id/holdings
 GET    /api/v1/portfolios/:id/analytics           # allocation, sector split, health metrics, strategy overview
 GET    /api/v1/portfolios/:id/activity            # descriptive diffs between consecutive syncs (ADR-015, Milestone 3)
 GET    /api/v1/portfolios/:id/profile             # detail + holdings + analytics + activity combined
-GET    /api/v1/portfolios/:id/history             # snapshots over time — not yet implemented, see feature-backlog.md
+GET    /api/v1/portfolios/:id/history             # raw snapshot history over time (Milestone 5)
 PATCH  /api/v1/portfolios/:id                     # e.g. toggle is_public
 ```
 
@@ -173,7 +173,8 @@ GET /api/v1/portfolios/9f2c.../analytics
       "diversification_score": 0.72,
       "sector_concentration_hhi": 0.19,
       "portfolio_age_days": 612,
-      "holding_count": 14
+      "holding_count": 14,
+      "volatility": 0.182
     },
     "strategy_overview": "Currently weighted toward Financials (31% of synced holdings), with exposure spread across other sectors as well, predominantly in large-cap holdings.",
     "as_of": "2026-07-13"
@@ -183,7 +184,7 @@ GET /api/v1/portfolios/9f2c.../analytics
 }
 ```
 
-`diversification_score` and `sector_concentration_hhi` are computed directly from current holdings composition (see [database.md](./database.md), [product-requirements.md](./product-requirements.md)). Fields like true return volatility are intentionally absent here until a market-data dependency is resolved — see ADR-008 in [decisions.md](./decisions.md). `strategy_overview` (added Milestone 3) is the rules-based Investor Strategy Overview from [product-requirements.md](./product-requirements.md) — descriptive-only wording, never a recommendation (see [security.md](./security.md)); `null` when there's not yet enough synced data to describe.
+`diversification_score` and `sector_concentration_hhi` are computed directly from current holdings composition (see [database.md](./database.md), [product-requirements.md](./product-requirements.md)). `volatility` (added Milestone 5, ADR-024 resolving ADR-008) is annualized, value-weighted across holdings, computed from the broker's own historical price data — `null` wherever there isn't a broker connection to fetch price history from (e.g. Public Investor Library portfolios) or too few data points to compute it honestly. `strategy_overview` (added Milestone 3) is the rules-based Investor Strategy Overview from [product-requirements.md](./product-requirements.md) — descriptive-only wording, never a recommendation (see [security.md](./security.md)); `null` when there's not yet enough synced data to describe.
 
 ## Example: Portfolio Activity Response
 
@@ -209,6 +210,35 @@ GET /api/v1/portfolios/9f2c.../activity
 ```
 
 Computed on read by diffing consecutive `portfolio_snapshots` rows — see ADR-015 in [decisions.md](./decisions.md). Strictly descriptive: no attributed cause, no "auto-copy" language, no comments. Empty list until a portfolio has 2+ snapshots.
+
+## Example: Portfolio History Response
+
+```json
+GET /api/v1/portfolios/9f2c.../history
+
+{
+  "data": [
+    {
+      "snapshot_date": "2026-07-18",
+      "total_value": 1200000,
+      "diversification_score": 0.70,
+      "volatility": null
+    },
+    {
+      "snapshot_date": "2026-07-25",
+      "total_value": 1245000,
+      "diversification_score": 0.72,
+      "volatility": 0.182
+    }
+  ],
+  "meta": {},
+  "error": null
+}
+```
+
+Added Milestone 5 — documented since Phase 0 but not built until now. Raw snapshot-level data, oldest to newest, distinct from `.../activity`'s descriptive diffs over the same `portfolio_snapshots` table (this is the data; that's the narration). `volatility` is `null` for any snapshot recorded before ADR-024 shipped, or wherever it couldn't be honestly computed — same convention as everywhere else. Empty list until a portfolio has at least one snapshot.
+
+`snapshot_date` isn't unique — more than one sync can land on the same calendar date, and each produces its own entry here (see ADR-025). Ordering (both this list and which snapshot `.../analytics` treats as current) is by `snapshot_date` and then by an internal creation-order tiebreaker, so entries sharing a date still appear in the order they actually happened, not arbitrarily.
 
 ## Rate Limiting
 

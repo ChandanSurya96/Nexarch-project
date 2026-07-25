@@ -4,26 +4,38 @@ See docs/product-requirements.md "Portfolio Analytics" / "Portfolio Health"
 for the calculation notes and docs/api.md for the response shape this feeds.
 
 KNOWN LIMITATION — "value" here means quantity * avg_cost_price (cost basis),
-not live market value. No market-data vendor is selected yet (ADR-008 defers
-that to Phase 2), so there's no current-price source to compute true market
-value or true volatility. Cost-basis allocation is a reasonable Phase 1 proxy
+not live market value. Cost-basis allocation is a reasonable Phase 1 proxy
 for "how is this portfolio spread out," but it will drift from true weights
 as prices move — this should be called out in the UI, not presented silently
 as live value, per the same "don't imply precision that isn't there"
-reasoning as ADR-008 itself.
+reasoning as ADR-008/ADR-024.
 
 KNOWN LIMITATION — asset_allocation is {"Equity": 1.0} for every portfolio in
 this milestone, since Upstox's long-term-holdings endpoint (the only source
 wired up so far) only returns equities. This becomes meaningful once a second
 instrument type (mutual funds, etc.) is ingested.
+
+Volatility (ADR-024, resolving ADR-008): annualized stddev of daily log
+returns, value-weighted across holdings — see compute_volatility and
+compute_portfolio_volatility below. `None` wherever there isn't enough
+price history to compute it honestly (no broker connection with historical
+data, e.g. Public Investor Library portfolios; or too few data points) —
+never a fabricated or interpolated number.
 """
 
 from __future__ import annotations
 
+import math
+import uuid
 from datetime import date
 
 from app.models.holding import Holding
 from app.models.portfolio_snapshot import PortfolioSnapshot
+
+# Fewer data points than this isn't a real signal — an honestly absent
+# volatility, not a noisy one.
+_MIN_PRICE_POINTS_FOR_VOLATILITY = 20
+_TRADING_DAYS_PER_YEAR = 252
 
 
 def _holding_value(holding: Holding) -> float:
@@ -106,12 +118,77 @@ def compute_portfolio_age_days(snapshots: list[PortfolioSnapshot]) -> int:
     return (date.today() - earliest).days
 
 
-def compute_health_metrics(holdings: list[Holding], snapshots: list[PortfolioSnapshot]) -> dict:
+def compute_volatility(closes: list[float]) -> float | None:
+    """Annualized volatility from a series of daily closing prices —
+    stddev of daily log returns * sqrt(252 trading days).
+
+    None if there are too few data points (ADR-024) — a short series
+    produces a statistically meaningless number that would look precise
+    without being one.
+    """
+    if len(closes) < _MIN_PRICE_POINTS_FOR_VOLATILITY:
+        return None
+
+    log_returns = [
+        math.log(closes[i] / closes[i - 1])
+        for i in range(1, len(closes))
+        if closes[i - 1] > 0 and closes[i] > 0
+    ]
+    if len(log_returns) < _MIN_PRICE_POINTS_FOR_VOLATILITY - 1:
+        return None
+
+    mean_return = sum(log_returns) / len(log_returns)
+    variance = sum((r - mean_return) ** 2 for r in log_returns) / (len(log_returns) - 1)
+    daily_stddev = math.sqrt(variance)
+    return round(daily_stddev * math.sqrt(_TRADING_DAYS_PER_YEAR), 4)
+
+
+def compute_portfolio_volatility(
+    holdings: list[Holding], closes_by_holding_id: dict[uuid.UUID, list[float]]
+) -> float | None:
+    """Value-weighted portfolio volatility — same value-weighting
+    compute_sector_allocation already uses.
+
+    Holdings with no usable price history are excluded, not zero-filled:
+    the result is renormalized over the weight of holdings that actually
+    contributed, so missing data for one holding doesn't silently drag the
+    whole figure down. None if no holding contributed at all.
+    """
+    total = sum(_holding_value(h) for h in holdings)
+    if total <= 0:
+        return None
+
+    weighted_sum = 0.0
+    weighted_total = 0.0
+    for holding in holdings:
+        closes = closes_by_holding_id.get(holding.id)
+        if not closes:
+            continue
+        volatility = compute_volatility(closes)
+        if volatility is None:
+            continue
+        weight = _holding_value(holding) / total
+        weighted_sum += volatility * weight
+        weighted_total += weight
+
+    if weighted_total <= 0:
+        return None
+    return round(weighted_sum / weighted_total, 4)
+
+
+def compute_health_metrics(
+    holdings: list[Holding],
+    snapshots: list[PortfolioSnapshot],
+    closes_by_holding_id: dict[uuid.UUID, list[float]] | None = None,
+) -> dict:
     """Assemble the full health-metrics dict stored on portfolio_snapshots
     and returned by GET /portfolios/:id/analytics (see docs/api.md).
 
-    Deliberately no single composite score (ADR-007) and no volatility/risk
-    field (ADR-008) — see docs/product-requirements.md "Portfolio Health".
+    Deliberately no single composite score (ADR-007) — see
+    docs/product-requirements.md "Portfolio Health". `volatility` (ADR-024)
+    is `None` whenever `closes_by_holding_id` isn't supplied or doesn't
+    yield enough data — the same honest-absence convention as every other
+    nullable field in this API, not a fabricated number.
     """
     sector_allocation = compute_sector_allocation(holdings)
     hhi = compute_hhi(sector_allocation)
@@ -120,4 +197,9 @@ def compute_health_metrics(holdings: list[Holding], snapshots: list[PortfolioSna
         "sector_concentration_hhi": hhi,
         "portfolio_age_days": compute_portfolio_age_days(snapshots),
         "holding_count": len(holdings),
+        "volatility": (
+            compute_portfolio_volatility(holdings, closes_by_holding_id)
+            if closes_by_holding_id
+            else None
+        ),
     }

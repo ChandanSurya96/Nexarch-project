@@ -9,12 +9,20 @@ metrics (diversification, concentration). They are written by the sync worker
 
 See ADR-008: true volatility metrics are deferred to Phase 2+ pending a
 market-data vendor decision.
+
+`snapshot_date` is the business date a snapshot represents; it is
+deliberately not unique per portfolio — more than one sync can legitimately
+land on the same calendar date (e.g. two manual "sync now" calls), and each
+gets its own row (ADR-025). `created_at` is what makes "latest" and
+chronological ordering deterministic across same-date rows — every query
+that wants the most recent snapshot must sort by both, not `snapshot_date`
+alone.
 """
 
 import uuid
-from datetime import date
+from datetime import UTC, date, datetime
 
-from sqlalchemy import JSON, Date, ForeignKey, Numeric, Uuid
+from sqlalchemy import JSON, Date, ForeignKey, Numeric, Uuid, func
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.extensions import db
@@ -37,6 +45,13 @@ class PortfolioSnapshot(db.Model):
     sector_allocation: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     asset_allocation: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     health_metrics: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    # The deterministic ordering key (ADR-025) — id is a random UUID4, not
+    # sequential, so it can't serve as a chronological tiebreaker on its own.
+    created_at: Mapped[datetime] = mapped_column(
+        default=lambda: datetime.now(UTC),
+        server_default=func.now(),
+        nullable=False,
+    )
 
     # ── Relationships ─────────────────────────────────────────────────────────
     portfolio: Mapped["Portfolio"] = relationship(  # noqa: F821

@@ -16,16 +16,22 @@ from app.models.portfolio import Portfolio
 from app.schemas.portfolio import (
     HoldingSchema,
     PortfolioAnalyticsSchema,
+    PortfolioHistoryEntrySchema,
     PortfolioSchema,
 )
 from app.services.activity_service import get_activity
 from app.services.analytics_service import compute_hhi
-from app.services.portfolio_service import get_latest_snapshot, get_visible_portfolio
+from app.services.portfolio_service import (
+    get_latest_snapshot,
+    get_snapshot_history,
+    get_visible_portfolio,
+)
 from app.services.strategy_overview_service import generate_overview
 
 _portfolio_schema = PortfolioSchema()
 _holding_schema = HoldingSchema()
 _analytics_schema = PortfolioAnalyticsSchema()
+_history_entry_schema = PortfolioHistoryEntrySchema()
 
 
 def _build_analytics_view(portfolio_id: uuid.UUID, portfolio: Portfolio) -> dict:
@@ -79,6 +85,12 @@ def get_analytics_view(portfolio_id: uuid.UUID, requesting_user_id: uuid.UUID | 
 def get_activity_view(portfolio_id: uuid.UUID, requesting_user_id: uuid.UUID | None) -> list[dict]:
     get_visible_portfolio(portfolio_id, requesting_user_id)  # raises if not visible
     return get_activity(portfolio_id)
+
+
+def get_history_view(portfolio_id: uuid.UUID, requesting_user_id: uuid.UUID | None) -> list[dict]:
+    get_visible_portfolio(portfolio_id, requesting_user_id)  # raises if not visible
+    snapshots = get_snapshot_history(portfolio_id)
+    return _history_entry_schema.dump(snapshots, many=True)
 
 
 def get_complete_profile(portfolio_id: uuid.UUID, requesting_user_id: uuid.UUID | None) -> dict:

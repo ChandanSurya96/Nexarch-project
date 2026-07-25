@@ -6,7 +6,7 @@ isolation from sync — see test_broker_connections.py for the connect->sync pat
 """
 
 import uuid
-from datetime import date
+from datetime import UTC, date, datetime
 
 from app.extensions import db
 from app.models.holding import Holding
@@ -132,6 +132,7 @@ class TestGetAnalytics:
                 "sector_concentration_hhi": 1.0,
                 "portfolio_age_days": 0,
                 "holding_count": 1,
+                "volatility": None,
             },
         )
         db.session.add(snapshot)
@@ -144,9 +145,10 @@ class TestGetAnalytics:
         assert data["sector_allocation"] == {"Energy": 1.0}
         assert data["health"]["sector_concentration_hhi"] == 1.0
         assert data["as_of"] == "2026-07-25"
-        # No composite score, no volatility (ADR-007, ADR-008).
+        # No composite score (ADR-007); volatility present but honestly None
+        # here since this snapshot was hand-built without price data (ADR-024).
         assert "score" not in data["health"]
-        assert "volatility" not in data["health"]
+        assert data["health"]["volatility"] is None
 
 
 class TestPatchPortfolio:
@@ -267,3 +269,148 @@ class TestCompleteProfile:
 
         resp = client.get(f"/api/v1/portfolios/{portfolio.id}/profile", headers=_auth_header(token))
         assert resp.status_code == 200
+
+
+class TestGetHistory:
+    def test_no_snapshots_yet_returns_empty_list(self, client):
+        user_id, _ = _register_and_login(client, "history-empty@example.com", "historyempty")
+        portfolio = _make_portfolio(user_id, is_public=True)
+
+        resp = client.get(f"/api/v1/portfolios/{portfolio.id}/history")
+        assert resp.status_code == 200
+        assert resp.get_json()["data"] == []
+
+    def test_returns_snapshots_oldest_to_newest(self, client):
+        user_id, _ = _register_and_login(client, "history-owner@example.com", "historyowner")
+        portfolio = _make_portfolio(user_id, is_public=True)
+
+        older = PortfolioSnapshot(
+            portfolio_id=portfolio.id,
+            snapshot_date=date(2026, 7, 1),
+            total_value=20000,
+            sector_allocation={"Energy": 1.0},
+            asset_allocation={"Equity": 1.0},
+            health_metrics={
+                "diversification_score": 0.0,
+                "sector_concentration_hhi": 1.0,
+                "portfolio_age_days": 0,
+                "holding_count": 1,
+                "volatility": None,
+            },
+        )
+        newer = PortfolioSnapshot(
+            portfolio_id=portfolio.id,
+            snapshot_date=date(2026, 7, 25),
+            total_value=25000,
+            sector_allocation={"Energy": 1.0},
+            asset_allocation={"Equity": 1.0},
+            health_metrics={
+                "diversification_score": 0.0,
+                "sector_concentration_hhi": 1.0,
+                "portfolio_age_days": 24,
+                "holding_count": 1,
+                "volatility": 0.182,
+            },
+        )
+        db.session.add_all([older, newer])
+        db.session.commit()
+
+        resp = client.get(f"/api/v1/portfolios/{portfolio.id}/history")
+        assert resp.status_code == 200
+        data = resp.get_json()["data"]
+
+        assert len(data) == 2
+        assert data[0]["snapshot_date"] == "2026-07-01"
+        assert data[0]["total_value"] == 20000.0
+        assert data[0]["volatility"] is None
+        assert data[1]["snapshot_date"] == "2026-07-25"
+        assert data[1]["volatility"] == 0.182
+
+    def test_private_portfolio_returns_404(self, client):
+        user_id, _ = _register_and_login(client, "history-priv@example.com", "historypriv")
+        portfolio = _make_portfolio(user_id, is_public=False)
+
+        resp = client.get(f"/api/v1/portfolios/{portfolio.id}/history")
+        assert resp.status_code == 404
+        assert resp.get_json()["error"]["code"] == "PORTFOLIO_NOT_FOUND"
+
+
+class TestSnapshotOrdering:
+    """ADR-025 — snapshot_date isn't unique per portfolio (more than one
+    sync can land on the same calendar date), so created_at is what makes
+    "latest" and chronological ordering deterministic."""
+
+    def _same_day_snapshots(self, portfolio_id: uuid.UUID) -> tuple[PortfolioSnapshot, PortfolioSnapshot]:
+        same_day = date(2026, 7, 25)
+        # The chronologically LATER snapshot is constructed (and added to
+        # the session) FIRST, deliberately — this proves the ordering fix
+        # depends on created_at, not on insertion/row order.
+        later = PortfolioSnapshot(
+            portfolio_id=portfolio_id,
+            snapshot_date=same_day,
+            total_value=30000,
+            sector_allocation={"IT": 1.0},
+            asset_allocation={"Equity": 1.0},
+            health_metrics={
+                "diversification_score": 0.0,
+                "sector_concentration_hhi": 1.0,
+                "portfolio_age_days": 0,
+                "holding_count": 2,
+                "volatility": 0.20,
+            },
+            created_at=datetime(2026, 7, 25, 18, 0, tzinfo=UTC),
+        )
+        earlier = PortfolioSnapshot(
+            portfolio_id=portfolio_id,
+            snapshot_date=same_day,
+            total_value=25000,
+            sector_allocation={"Energy": 1.0},
+            asset_allocation={"Equity": 1.0},
+            health_metrics={
+                "diversification_score": 0.0,
+                "sector_concentration_hhi": 1.0,
+                "portfolio_age_days": 0,
+                "holding_count": 1,
+                "volatility": None,
+            },
+            created_at=datetime(2026, 7, 25, 9, 0, tzinfo=UTC),
+        )
+        return later, earlier
+
+    def test_analytics_deterministically_returns_the_latest_created_at(self, client):
+        user_id, _ = _register_and_login(
+            client, "ordering-analytics@example.com", "orderinganalytics"
+        )
+        portfolio = _make_portfolio(user_id, is_public=True)
+        later, earlier = self._same_day_snapshots(portfolio.id)
+        db.session.add_all([later, earlier])  # later inserted first, on purpose
+        db.session.commit()
+
+        resp = client.get(f"/api/v1/portfolios/{portfolio.id}/analytics")
+        assert resp.status_code == 200
+        data = resp.get_json()["data"]
+
+        # The 18:00 snapshot is the true latest despite being added first —
+        # proves selection is by created_at, not insertion order.
+        assert data["total_value"] == 30000.0
+        assert data["health"]["holding_count"] == 2
+        assert data["health"]["volatility"] == 0.20
+
+    def test_history_includes_both_same_day_snapshots_in_creation_order(self, client):
+        user_id, _ = _register_and_login(
+            client, "ordering-history@example.com", "orderinghistory"
+        )
+        portfolio = _make_portfolio(user_id, is_public=True)
+        later, earlier = self._same_day_snapshots(portfolio.id)
+        db.session.add_all([later, earlier])
+        db.session.commit()
+
+        resp = client.get(f"/api/v1/portfolios/{portfolio.id}/history")
+        assert resp.status_code == 200
+        data = resp.get_json()["data"]
+
+        same_day_entries = [e for e in data if e["snapshot_date"] == "2026-07-25"]
+        assert len(same_day_entries) == 2
+        # Oldest-created-first within the same date.
+        assert same_day_entries[0]["total_value"] == 25000.0
+        assert same_day_entries[1]["total_value"] == 30000.0

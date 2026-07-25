@@ -147,6 +147,12 @@ with app.test_client() as c:
                 )
             ]
 
+        def fetch_historical_prices(self, access_token, isin, exchange, from_date, to_date):
+            # Empty is a valid response (ADR-024) — this smoke test isn't
+            # asserting anything about volatility specifically, so there's no
+            # need to fabricate a full price series here.
+            return []
+
     # Redis (used for the OAuth state token, ADR-023) faked with a plain dict
     # so this script stays "no external server, database, or Docker needed."
     _redis_store: dict[str, str] = {}
@@ -241,7 +247,9 @@ with app.test_client() as c:
     check("analytics status 200", r.status_code == 200, r.status_code)
     check("hhi is 1.0 for single holding", body["data"]["health"]["sector_concentration_hhi"] == 1.0)
     check("no composite score field", "score" not in body["data"]["health"])
-    check("no volatility field", "volatility" not in body["data"]["health"])
+    # ADR-024 (resolving ADR-008): volatility is now a real, nullable field —
+    # None here since the fake adapter returns no historical prices.
+    check("volatility is honestly None", body["data"]["health"]["volatility"] is None)
 
     print("\n=== PUBLIC/PRIVATE TOGGLE ===")
     r = c.patch(
