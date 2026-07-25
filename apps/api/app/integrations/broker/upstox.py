@@ -21,7 +21,7 @@ tests can mock it without live credentials.
 from __future__ import annotations
 
 import os
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 
 import requests
 
@@ -31,6 +31,7 @@ from app.integrations.broker.base import (
     BrokerAuthError,
     BrokerRateLimitError,
     BrokerTokenExpiredError,
+    PricePoint,
     RawHolding,
     TokenPair,
 )
@@ -38,6 +39,11 @@ from app.integrations.broker.base import (
 _LOGIN_URL = "https://api.upstox.com/v2/login/authorization/dialog"
 _TOKEN_URL = "https://api.upstox.com/v2/login/authorization/token"
 _HOLDINGS_URL = "https://api.upstox.com/v2/portfolio/long-term-holdings"
+# V3 historical-candle API (verified against Upstox's current developer docs,
+# 2026-07 — see the module VERIFY BEFORE PRODUCTION note). instrument_key's
+# literal "|" is part of Upstox's own documented path format, not URL-encoded
+# in their examples — kept as-is here to match.
+_HISTORICAL_CANDLE_URL = "https://api.upstox.com/v3/historical-candle"
 
 _REQUEST_TIMEOUT_SECONDS = 10
 
@@ -103,6 +109,32 @@ class UpstoxAdapter(BrokerAdapter):
             for item in raw_items
         ]
 
+    def fetch_historical_prices(
+        self, access_token: str, isin: str, exchange: str, from_date: date, to_date: date
+    ) -> list[PricePoint]:
+        resp = self._http_get_historical_candles(access_token, isin, exchange, from_date, to_date)
+
+        if resp.status_code == 401:
+            raise BrokerTokenExpiredError("Upstox access token has expired.")
+        if resp.status_code == 429:
+            raise BrokerRateLimitError("Upstox rate limit hit while fetching historical prices.")
+        if resp.status_code != 200:
+            raise BrokerAPIError(
+                f"Upstox historical-candle fetch failed: {resp.status_code} {resp.text}"
+            )
+
+        body = resp.json()
+        candles = body.get("data", {}).get("candles", [])
+        points = []
+        for candle in candles:
+            try:
+                trade_date = datetime.fromisoformat(candle[0]).date()
+                close = float(candle[4])
+            except (IndexError, ValueError, TypeError):
+                continue  # one malformed candle shouldn't discard the rest
+            points.append(PricePoint(trade_date=trade_date, close=close))
+        return points
+
     # ── HTTP boundary — isolated so tests can mock it without live creds ──────
 
     def _http_post_token(self, auth_code: str, redirect_uri: str) -> requests.Response:
@@ -122,6 +154,23 @@ class UpstoxAdapter(BrokerAdapter):
     def _http_get_holdings(self, access_token: str) -> requests.Response:
         return requests.get(
             _HOLDINGS_URL,
+            headers={
+                "Accept": "application/json",
+                "Authorization": f"Bearer {access_token}",
+            },
+            timeout=_REQUEST_TIMEOUT_SECONDS,
+        )
+
+    def _http_get_historical_candles(
+        self, access_token: str, isin: str, exchange: str, from_date: date, to_date: date
+    ) -> requests.Response:
+        instrument_key = f"{exchange}_EQ|{isin}"
+        url = (
+            f"{_HISTORICAL_CANDLE_URL}/{instrument_key}/days/1/"
+            f"{to_date.isoformat()}/{from_date.isoformat()}"
+        )
+        return requests.get(
+            url,
             headers={
                 "Accept": "application/json",
                 "Authorization": f"Bearer {access_token}",

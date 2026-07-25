@@ -10,6 +10,39 @@ Nothing pending beyond what's logged below — this section stays as the running
 
 ---
 
+## [2026-07-25] — Fix: nondeterministic latest-snapshot ordering (ADR-025)
+
+### Added
+- `portfolio_snapshots.created_at` (migration `0004`) — a server-generated UTC timestamp, backfilled for existing rows in the same statement that adds the column.
+
+### Fixed
+- `get_latest_snapshot`, `get_snapshot_history` (`portfolio_service.py`), and `get_activity` (`activity_service.py`) all ordered by `snapshot_date` alone, which isn't unique per portfolio — more than one sync can land on the same calendar date (a scheduled sync plus a manual "sync now," or two manual syncs past the cooldown). Without a secondary sort key, which same-date row `/analytics` returned as "current" was genuinely undefined. All three now sort by `(snapshot_date, created_at)`. Found while explaining, on request, whether a stored volatility figure is immutable — it surfaced that "latest" itself wasn't well-defined in the same-day case.
+- `test_portfolios.py::TestGetAnalytics::test_with_snapshot_returns_health_metrics` asserted `"volatility" not in health` against a hand-built `health_metrics` dict that simply never included the key — accurate by coincidence, not by the actual current contract (`volatility` has been a real, nullable field since Milestone 5). Updated to assert `is None`.
+
+### Notes
+- `snapshot_date`/uniqueness was deliberately left alone — multiple same-day snapshots are legitimate, independent events, not a bug; see ADR-025 for why a `UNIQUE` constraint + upsert was rejected.
+- The existing `(portfolio_id, snapshot_date)` index wasn't extended to include `created_at` — same-date row counts per portfolio are small enough (bounded by the sync cooldown) that the extra in-memory sort is negligible.
+
+---
+
+## [2026-07-25] — Milestone 5: Health Metrics (Phase 2, first slice)
+
+### Added
+- Portfolio volatility (ADR-024, resolving ADR-008): annualized, value-weighted standard deviation of daily log returns, computed from Upstox's own Historical Candle Data API using the same broker access token already stored per connection — no new market-data vendor. `BrokerAdapter.fetch_historical_prices` (+ `PricePoint`), implemented in `UpstoxAdapter`; `analytics_service.compute_volatility`/`compute_portfolio_volatility`; wired into `sync_service.run_sync` via `_fetch_closes_by_holding_id`, with per-holding fetch failures isolated so one bad ISIN doesn't fail the whole sync.
+- `health.volatility` (nullable) added to the analytics response and to `PortfolioProfileView`'s health `StatCard` grid — rendered only when non-null, never a placeholder.
+- `GET /portfolios/:id/history` — documented in `docs/api.md` since Phase 0, built now: raw `total_value`/`diversification_score`/`volatility` per snapshot, oldest to newest. `portfolio_service.get_snapshot_history`, `PortfolioHistoryEntrySchema`, `usePortfolioHistory` hook, and a new `HistoryChart` (Recharts line chart with the same accessible-table pattern as `AllocationChart`) rendered on the profile view once 2+ snapshots exist.
+- `test_sync_service.py` — `run_sync` had no dedicated test file before this milestone (only exercised via `smoke_test.py` and indirectly through mocked `.delay()` calls); added alongside the new volatility-wiring logic.
+- 13 new backend tests, 4 new frontend tests.
+
+### Fixed
+- Two existing tests encoded ADR-008's original "no volatility field at all" constraint (`test_no_volatility_field` in `test_analytics_service.py`, an equivalent check in `smoke_test.py`) — updated to the new convention this milestone establishes: `volatility` is a real field, honestly `null` when it can't be computed, not absent.
+
+### Notes
+- Real limitation, stated plainly: volatility only covers verified (Upstox-connected) portfolios. Public Investor Library portfolios have no broker token to fetch historical prices with, so they remain without it — the same pre-existing gap as every other health metric for that portfolio type (ADR-015's design note), not a new one.
+- Manually verified via a targeted script exercising `compute_volatility`/`compute_portfolio_volatility` against hand-built price series, and the full `/history` + `/analytics` response shapes against seeded snapshot data.
+
+---
+
 ## [2026-07-25] — Phase 1 cleanup: OAuth state validation + self-follow fix
 
 ### Added

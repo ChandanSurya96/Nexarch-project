@@ -8,10 +8,11 @@ import beyond db) so it's unit-testable without a running worker.
 from __future__ import annotations
 
 import uuid
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 
 from app.extensions import db
 from app.integrations.broker.base import (
+    BrokerAdapter,
     BrokerAPIError,
     BrokerRateLimitError,
     BrokerTokenExpiredError,
@@ -31,6 +32,41 @@ from app.services.analytics_service import (
 from app.services.discovery_service import invalidate_discovery_cache
 from app.services.encryption_service import decrypt_token
 from app.services.normalization_service import normalize_holdings
+
+# Trailing window for the volatility calculation (ADR-024) — about a year of
+# trading history, a conventional lookback for an annualized figure.
+_VOLATILITY_LOOKBACK_DAYS = 365
+
+
+def _fetch_closes_by_holding_id(
+    adapter: BrokerAdapter, access_token: str, holdings: list[Holding]
+) -> dict[uuid.UUID, list[float]]:
+    """Best-effort per-holding historical closes for compute_portfolio_volatility.
+
+    One holding's fetch failing (bad/missing ISIN, rate limit, no historical
+    data for that instrument) doesn't fail the sync — it just doesn't
+    contribute to the portfolio volatility figure, same "partial honesty
+    over all-or-nothing" posture as the rest of this module.
+    """
+    to_date = date.today()
+    from_date = to_date - timedelta(days=_VOLATILITY_LOOKBACK_DAYS)
+    closes_by_holding_id: dict[uuid.UUID, list[float]] = {}
+
+    for holding in holdings:
+        if not holding.isin or not holding.exchange:
+            continue
+        try:
+            points = adapter.fetch_historical_prices(
+                access_token, holding.isin, holding.exchange, from_date, to_date
+            )
+        except (BrokerTokenExpiredError, BrokerRateLimitError, BrokerAPIError):
+            continue
+        if points:
+            closes_by_holding_id[holding.id] = [
+                point.close for point in sorted(points, key=lambda p: p.trade_date)
+            ]
+
+    return closes_by_holding_id
 
 
 def run_sync(broker_connection_id: str) -> None:
@@ -91,9 +127,11 @@ def run_sync(broker_connection_id: str) -> None:
     db.session.add_all(holdings)
     db.session.flush()
 
+    closes_by_holding_id = _fetch_closes_by_holding_id(adapter, access_token, holdings)
+
     sector_allocation = compute_sector_allocation(holdings)
     asset_allocation = compute_asset_allocation(holdings)
-    health_metrics = compute_health_metrics(holdings, prior_snapshots)
+    health_metrics = compute_health_metrics(holdings, prior_snapshots, closes_by_holding_id)
     total_value = compute_total_value(holdings)
 
     snapshot = PortfolioSnapshot(

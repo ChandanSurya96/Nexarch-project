@@ -4,6 +4,7 @@ HHI/diversification math checked against docs/product-requirements.md's own
 example: "A single-sector portfolio scores 1.0 (maximally concentrated)."
 """
 
+import uuid
 from datetime import date
 
 from app.models.holding import Holding
@@ -14,8 +15,10 @@ from app.services.analytics_service import (
     compute_health_metrics,
     compute_hhi,
     compute_portfolio_age_days,
+    compute_portfolio_volatility,
     compute_sector_allocation,
     compute_total_value,
+    compute_volatility,
 )
 
 
@@ -111,12 +114,22 @@ class TestHealthMetrics:
         assert "score" not in health
         assert "trust_score" not in health
 
-    def test_no_volatility_field(self):
-        # ADR-008: absence, not a null placeholder.
+    def test_volatility_is_none_without_price_data(self):
+        # ADR-024 (resolving ADR-008): volatility is now a real field, but
+        # honestly None rather than fabricated when there's no price series
+        # to compute it from — the same convention as every other nullable
+        # field in this API, not a placeholder pretending to be data.
         holdings = [_holding("Financials", 10, 100)]
         health = compute_health_metrics(holdings, [])
-        assert "volatility" not in health
+        assert health["volatility"] is None
         assert "risk" not in health
+
+    def test_no_composite_risk_score_field(self):
+        # ADR-007 still holds: volatility is its own labeled field, not
+        # folded into a composite score.
+        holdings = [_holding("Financials", 10, 100)]
+        health = compute_health_metrics(holdings, [])
+        assert "risk_score" not in health
 
     def test_expected_keys_present(self):
         holdings = [_holding("Financials", 10, 100)]
@@ -126,5 +139,68 @@ class TestHealthMetrics:
             "sector_concentration_hhi",
             "portfolio_age_days",
             "holding_count",
+            "volatility",
         }
         assert health["holding_count"] == 1
+
+
+class TestComputeVolatility:
+    def test_too_few_points_returns_none(self):
+        closes = [100.0 + i for i in range(10)]  # fewer than the 20-point floor
+        assert compute_volatility(closes) is None
+
+    def test_constant_price_series_has_zero_volatility(self):
+        # No day-to-day change at all -> every log return is 0.
+        closes = [100.0] * 25
+        assert compute_volatility(closes) == 0.0
+
+    def test_varying_prices_produce_a_positive_number(self):
+        closes = [100.0, 102.0, 98.0, 101.0, 97.0] * 5  # 25 points, real variance
+        volatility = compute_volatility(closes)
+        assert volatility is not None
+        assert volatility > 0
+
+
+class TestComputePortfolioVolatility:
+    def _priced_holding(self, quantity: float, avg_cost_price: float) -> Holding:
+        return Holding(
+            id=uuid.uuid4(),
+            symbol="TEST",
+            quantity=quantity,
+            avg_cost_price=avg_cost_price,
+            as_of_date=date(2026, 7, 25),
+        )
+
+    def test_none_when_no_holding_has_price_data(self):
+        holdings = [self._priced_holding(10, 100)]
+        assert compute_portfolio_volatility(holdings, {}) is None
+
+    def test_excludes_holdings_without_price_data_rather_than_zero_filling(self):
+        priced = self._priced_holding(10, 100)
+        unpriced = self._priced_holding(10, 100)
+        varying_closes = [100.0, 102.0, 98.0, 101.0, 97.0] * 5
+
+        result = compute_portfolio_volatility(
+            [priced, unpriced], {priced.id: varying_closes}
+        )
+        solo_volatility = compute_volatility(varying_closes)
+
+        # Only the priced holding contributed — the result should match its
+        # own volatility exactly, not be diluted toward zero by the unpriced one.
+        assert result == solo_volatility
+
+    def test_value_weighted_average(self):
+        # Holding A: value 1000, zero volatility. Holding B: value 1000, some volatility.
+        # Equal weight -> result is exactly half of B's own volatility.
+        flat_closes = [100.0] * 25
+        varying_closes = [100.0, 110.0, 90.0, 105.0, 95.0] * 5
+
+        holding_a = self._priced_holding(quantity=10, avg_cost_price=100)  # value 1000
+        holding_b = self._priced_holding(quantity=10, avg_cost_price=100)  # value 1000
+
+        result = compute_portfolio_volatility(
+            [holding_a, holding_b],
+            {holding_a.id: flat_closes, holding_b.id: varying_closes},
+        )
+        b_volatility = compute_volatility(varying_closes)
+        assert result == round(b_volatility / 2, 4)

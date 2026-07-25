@@ -74,3 +74,20 @@ class ActivityEntrySchema(Schema):
     sector_changes = fields.List(fields.Dict(keys=fields.String(), values=fields.Raw()))
     holding_count_change = fields.Dict(allow_none=True)
     summary = fields.String()
+
+
+class PortfolioHistoryEntrySchema(Schema):
+    """One entry of GET /portfolios/:id/history (Milestone 5) — raw
+    snapshot-level data over time, distinct from activity_service's
+    descriptive diffs computed from the same portfolio_snapshots table."""
+
+    snapshot_date = fields.Date()
+    total_value = fields.Float(allow_none=True)
+    diversification_score = fields.Method("get_diversification_score")
+    volatility = fields.Method("get_volatility")
+
+    def get_diversification_score(self, snapshot) -> float | None:
+        return (snapshot.health_metrics or {}).get("diversification_score")
+
+    def get_volatility(self, snapshot) -> float | None:
+        return (snapshot.health_metrics or {}).get("volatility")

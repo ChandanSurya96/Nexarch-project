@@ -73,11 +73,12 @@ erDiagram
     PORTFOLIO_SNAPSHOTS {
         uuid id PK
         uuid portfolio_id FK
-        date snapshot_date
+        date snapshot_date "business date — not unique per portfolio, see ADR-025"
+        timestamptz created_at "deterministic ordering key, added Milestone 5"
         numeric total_value
         jsonb sector_allocation
         jsonb asset_allocation
-        jsonb health_metrics "diversification, concentration scores"
+        jsonb health_metrics "diversification, concentration, volatility (ADR-024) scores"
     }
 
     STRATEGY_CATEGORIES {
@@ -124,6 +125,8 @@ erDiagram
 
 **Why holdings are point-in-time, not a running ledger:** `holdings` reflects the *current* synced state (overwritten on each sync); `portfolio_snapshots` is the append-only history used for "portfolio age," "historical changes," and trend charts. This avoids needing full transaction-level data (buys/sells) that most broker read-APIs don't cleanly expose anyway — see [broker-integrations.md](./broker-integrations.md).
 
+**Why `portfolio_snapshots.snapshot_date` has no uniqueness constraint (ADR-025):** more than one sync can legitimately land on the same calendar date — a scheduled sync plus a manual "sync now," or two manual syncs far enough apart to clear the cooldown — and each gets its own row; nothing ever updates a prior snapshot in place. `created_at` (added Milestone 5) is the deterministic secondary sort key every "latest snapshot" query uses, so which same-date row is "current" is never left to whatever order the database happens to return rows in.
+
 **Why `strategy_categories` is a join table, not a single `strategy` column on `portfolios`:** a portfolio can plausibly be both "Value Investing" and "Long-Term Compounder" at once — see the strategy list in [product-requirements.md](./product-requirements.md). A single-value column would force a false choice.
 
 **What's deliberately not in this schema yet:**
@@ -165,6 +168,6 @@ Alembic, one migration per schema change, never edited after being merged to mai
 
 ## Future Schema Evolution
 
-- **Phase 2:** likely additions to `portfolio_snapshots.health_metrics` once a market-data vendor is selected for true volatility (see ADR-008).
+- **Phase 2:** done — `portfolio_snapshots.health_metrics` gained `volatility` in Milestone 5 without a migration, exactly as this column's flexible-JSON shape was designed to allow (see ADR-008, ADR-024).
 - **Phase 4:** `subscriptions`, `creator_payouts`.
 - **Phase 5:** `orders`, `trades`, and a much closer look at reconciliation between Nexarch's records and the broker's, since execution data has to be authoritative in a way read-only sync doesn't.

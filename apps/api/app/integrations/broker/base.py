@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import date, datetime
 
 
 @dataclass(frozen=True)
@@ -32,6 +32,15 @@ class RawHolding:
     exchange: str | None
     quantity: float
     avg_cost_price: float | None
+
+
+@dataclass(frozen=True)
+class PricePoint:
+    """One day's closing price — the input to volatility calculations
+    (see app/services/analytics_service.py, ADR-024)."""
+
+    trade_date: date
+    close: float
 
 
 class BrokerAuthError(Exception):
@@ -88,6 +97,21 @@ class BrokerAdapter(ABC):
             BrokerTokenExpiredError: if the access token has expired.
             BrokerRateLimitError: if the broker's rate limit was hit.
             BrokerAPIError: for any other failure.
+        """
+
+    @abstractmethod
+    def fetch_historical_prices(
+        self, access_token: str, isin: str, exchange: str, from_date: date, to_date: date
+    ) -> list[PricePoint]:
+        """Daily closing prices for one instrument over [from_date, to_date] —
+        the basis for the volatility calculation in analytics_service.py
+        (ADR-024). Reuses the same broker access token as fetch_holdings;
+        no separate market-data credential.
+
+        Raises the same errors as fetch_holdings for the same reasons. An
+        empty list (rather than an error) is an acceptable response for an
+        instrument with no historical data available — the caller treats
+        that as "not enough data for this holding," not a hard failure.
         """
 
     def refresh_token(self, refresh_token: str) -> TokenPair:

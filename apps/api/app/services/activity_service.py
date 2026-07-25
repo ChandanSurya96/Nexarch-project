@@ -27,10 +27,16 @@ _entry_schema = ActivityEntrySchema()
 
 def get_activity(portfolio_id: uuid.UUID) -> list[dict]:
     """Most-recent-first list of diffs between consecutive snapshots.
-    Empty list if there are fewer than 2 snapshots yet."""
+    Empty list if there are fewer than 2 snapshots yet.
+
+    Ordered by (snapshot_date, created_at) — snapshot_date alone isn't
+    unique per portfolio (ADR-025), so created_at keeps same-date rows in
+    actual creation order for the "consecutive pairs" diff below to mean
+    what it says.
+    """
     snapshots = (
         PortfolioSnapshot.query.filter_by(portfolio_id=portfolio_id)
-        .order_by(PortfolioSnapshot.snapshot_date.asc())
+        .order_by(PortfolioSnapshot.snapshot_date.asc(), PortfolioSnapshot.created_at.asc())
         .all()
     )
     if len(snapshots) < 2:

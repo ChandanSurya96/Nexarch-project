@@ -5,6 +5,7 @@ Endpoints (all under /api/v1/portfolios — prefix registered in create_app):
     GET    /:id/holdings    — current holdings
     GET    /:id/analytics   — allocation + health metrics + strategy overview
     GET    /:id/activity    — descriptive snapshot-history diffs (ADR-015)
+    GET    /:id/history     — raw snapshot history over time (Milestone 5)
     GET    /:id/profile     — detail + holdings + analytics + activity combined
     PATCH  /:id             — toggle is_public (owner only)
     POST   /:id/follow      — follow (no capital, no execution — see docs/product-requirements.md)
@@ -82,6 +83,17 @@ def get_portfolio_activity(portfolio_id: uuid.UUID):
     try:
         return success(
             portfolio_profile_service.get_activity_view(portfolio_id, _current_user_id())
+        )
+    except PortfolioAccessError as exc:
+        return error(exc.code, exc.message, exc.status)
+
+
+@portfolios_bp.get("/<uuid:portfolio_id>/history")
+@jwt_required(optional=True)
+def get_portfolio_history(portfolio_id: uuid.UUID):
+    try:
+        return success(
+            portfolio_profile_service.get_history_view(portfolio_id, _current_user_id())
         )
     except PortfolioAccessError as exc:
         return error(exc.code, exc.message, exc.status)

@@ -66,10 +66,28 @@ def get_my_portfolio(user_id: uuid.UUID) -> Portfolio | None:
 
 
 def get_latest_snapshot(portfolio_id: uuid.UUID) -> PortfolioSnapshot | None:
+    """The most recent snapshot. snapshot_date alone isn't unique per
+    portfolio (ADR-025) — more than one sync can land on the same calendar
+    date — so created_at is the tiebreaker that makes "latest" deterministic
+    rather than whichever same-date row the database happens to return first.
+    """
     return (
         PortfolioSnapshot.query.filter_by(portfolio_id=portfolio_id)
-        .order_by(PortfolioSnapshot.snapshot_date.desc())
+        .order_by(PortfolioSnapshot.snapshot_date.desc(), PortfolioSnapshot.created_at.desc())
         .first()
+    )
+
+
+def get_snapshot_history(portfolio_id: uuid.UUID) -> list[PortfolioSnapshot]:
+    """Oldest-to-newest snapshot history — powers GET /portfolios/:id/history,
+    documented since Phase 0 but not built until Milestone 5. Raw data (every
+    snapshot), distinct from the descriptive diffs activity_service produces
+    from the same table. created_at as a secondary key (ADR-025) orders
+    same-date rows by actual creation time instead of arbitrarily."""
+    return (
+        PortfolioSnapshot.query.filter_by(portfolio_id=portfolio_id)
+        .order_by(PortfolioSnapshot.snapshot_date.asc(), PortfolioSnapshot.created_at.asc())
+        .all()
     )
 
 
