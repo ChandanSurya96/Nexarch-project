@@ -8,19 +8,19 @@
 
 | Feature | Priority | Status | Notes |
 |---|---|---|---|
-| Auth: register/login/refresh/logout | P0 | Not started | See [api.md](../api.md) |
-| Database schema + initial migration | P0 | Not started | See [database.md](../database.md) |
-| Broker connection: Upstox (pilot broker) | P0 | Not started | Free API, analytics token avoids daily reauth — see [broker-integrations.md](../broker-integrations.md) |
-| Sync worker (Celery) + normalization layer | P0 | Not started | Shared `Holding` interface across adapters |
-| Verified profile page | P0 | Not started | Badge, holdings, allocation |
-| Public/private toggle | P0 | Not started | Private by default; gated on ADR-011 resolution for full public rollout |
-| Public Investor Library (seed data: 5 initial profiles) | P0 | Not started | Manual curation from public disclosures — see [product-requirements.md](../product-requirements.md) |
-| Discovery feed v1 (list + strategy filters) | P0 | Not started | No "most followed" sort yet (cold start) |
-| Portfolio analytics: allocation, sector split, HHI diversification/concentration | P0 | Not started | See calculation notes in [product-requirements.md](../product-requirements.md) |
-| Portfolio Health card (no single score) | P1 | Not started | See ADR-007 |
-| Responsive layout + dark mode theme | P0 | Not started | See [design-system.md](../design-system.md) |
-| Second broker connection: Dhan | P1 | Not started | Free, generous rate limit |
-| Account Aggregator integration spike | P1 | Not started | Parallel evaluation per ADR-010 — timebox to validate feasibility before committing further |
+| Auth: register/login/refresh/logout | P0 | Done (Milestone 1) | See [api.md](../api.md) |
+| Database schema + initial migration | P0 | Done (Milestone 1; extended in Milestone 2 with `audit_logs`) | See [database.md](../database.md) |
+| Broker connection: Upstox (pilot broker) | P0 | Backend done (Milestone 2) | Free API, analytics token avoids daily reauth — see [broker-integrations.md](../broker-integrations.md) |
+| Sync worker (Celery) + normalization layer | P0 | Done (Milestone 2) | Shared `Holding` interface across adapters |
+| Verified profile page | P0 | Not started | Badge, holdings, allocation — frontend, Milestone 4 |
+| Public/private toggle | P0 | Backend done (Milestone 2) | `PATCH /api/v1/portfolios/:id`; private by default; frontend control not yet built. Gated on ADR-011 resolution for full public rollout |
+| Public Investor Library (seed data: 5 initial profiles) | P0 | Not started | Manual curation from public disclosures — Milestone 3 — see [product-requirements.md](../product-requirements.md) |
+| Discovery feed v1 (list + strategy filters) | P0 | Not started | Milestone 3. No "most followed" sort yet (cold start) |
+| Portfolio analytics: allocation, sector split, HHI diversification/concentration | P0 | Backend done (Milestone 2) | See calculation notes in [product-requirements.md](../product-requirements.md); no frontend display yet |
+| Portfolio Health card (no single score) | P1 | Backend done (Milestone 2) | Metrics computed per ADR-007; the actual UI card is a Milestone 4 frontend item |
+| Responsive layout + dark mode theme | P0 | Not started | Milestone 4 — see [design-system.md](../design-system.md) |
+| Second broker connection: Dhan | P1 | Not started | Milestone 5. Free, generous rate limit |
+| Account Aggregator integration spike | P1 | Not started | Milestone 5, pending founder decision on FIU-registration path. Parallel evaluation per ADR-010 — timebox to validate feasibility before committing further |
 
 ## Phase 2 — Advanced Analytics & Comparisons
 

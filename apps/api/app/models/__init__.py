@@ -4,6 +4,7 @@ Import order matters for Alembic's autogenerate to pick up all tables.
 Import all models here so that they are registered on the metadata.
 """
 
+from app.models.audit_log import AuditLog
 from app.models.broker_connection import BrokerConnection
 from app.models.holding import Holding
 from app.models.portfolio import Portfolio
@@ -16,4 +17,5 @@ __all__ = [
     "Portfolio",
     "Holding",
     "PortfolioSnapshot",
+    "AuditLog",
 ]

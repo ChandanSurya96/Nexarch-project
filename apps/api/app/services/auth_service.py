@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from app.extensions import bcrypt, db
 from app.models.user import User
+from app.services import audit_service
 
 
 class AuthError(Exception):
@@ -74,4 +75,5 @@ def authenticate_user(email: str, password: str) -> User:
     if user is None or not bcrypt.check_password_hash(user.password_hash, password):
         raise AuthError("INVALID_CREDENTIALS", "Invalid email or password.", 401)
 
+    audit_service.log_event(user.id, "login")
     return user

@@ -26,6 +26,7 @@ Stack: Next.js + TypeScript + Tailwind (frontend) · Flask + SQLAlchemy + Postgr
 ## Commands
 Backend (from `apps/api/`, with venv active):
 - Dev server: `flask run`
+- Sync worker: `celery -A app.celery_app worker --loglevel=info` · Scheduled sync: `celery -A app.celery_app beat --loglevel=info`
 - Tests: `pytest`
 - Lint: `ruff check app/` · Format: `black app/`
 - Migrate: `flask db upgrade` (apply) · `flask db migrate -m "..."` (generate new)

@@ -1,0 +1,191 @@
+"""Tests for /api/v1/portfolios/*.
+
+Portfolios are created directly via the ORM here (not through the broker
+connect flow) since these tests target the read/visibility/update logic in
+isolation from sync — see test_broker_connections.py for the connect->sync path.
+"""
+
+import uuid
+from datetime import date
+
+from app.extensions import db
+from app.models.holding import Holding
+from app.models.portfolio import Portfolio
+from app.models.portfolio_snapshot import PortfolioSnapshot
+
+REGISTER_URL = "/api/v1/auth/register"
+LOGIN_URL = "/api/v1/auth/login"
+
+
+def _register_and_login(client, email, username):
+    payload = {"email": email, "password": "Secure123", "username": username}
+    reg_resp = client.post(REGISTER_URL, json=payload)
+    user_id = reg_resp.get_json()["data"]["user_id"]
+    login_resp = client.post(LOGIN_URL, json={"email": email, "password": payload["password"]})
+    access_token = login_resp.get_json()["data"]["access_token"]
+    return uuid.UUID(user_id), access_token
+
+
+def _auth_header(token: str) -> dict:
+    return {"Authorization": f"Bearer {token}"}
+
+
+def _make_portfolio(user_id: uuid.UUID, is_public: bool) -> Portfolio:
+    portfolio = Portfolio(user_id=user_id, portfolio_type="verified", is_public=is_public)
+    db.session.add(portfolio)
+    db.session.commit()
+    return portfolio
+
+
+class TestGetPortfolio:
+    def test_public_portfolio_visible_without_auth(self, client):
+        user_id, _ = _register_and_login(client, "pub-owner@example.com", "pubowner")
+        portfolio = _make_portfolio(user_id, is_public=True)
+
+        resp = client.get(f"/api/v1/portfolios/{portfolio.id}")
+        assert resp.status_code == 200
+        assert resp.get_json()["data"]["is_public"] is True
+
+    def test_private_portfolio_hidden_from_non_owner(self, client):
+        user_id, _ = _register_and_login(client, "priv-owner@example.com", "privowner")
+        portfolio = _make_portfolio(user_id, is_public=False)
+
+        _, other_token = _register_and_login(client, "stranger@example.com", "stranger")
+        resp = client.get(f"/api/v1/portfolios/{portfolio.id}", headers=_auth_header(other_token))
+        assert resp.status_code == 404
+        assert resp.get_json()["error"]["code"] == "PORTFOLIO_NOT_FOUND"
+
+    def test_private_portfolio_hidden_from_anonymous(self, client):
+        user_id, _ = _register_and_login(client, "priv-owner2@example.com", "privowner2")
+        portfolio = _make_portfolio(user_id, is_public=False)
+
+        resp = client.get(f"/api/v1/portfolios/{portfolio.id}")
+        assert resp.status_code == 404
+
+    def test_private_portfolio_visible_to_owner(self, client):
+        user_id, token = _register_and_login(client, "priv-owner3@example.com", "privowner3")
+        portfolio = _make_portfolio(user_id, is_public=False)
+
+        resp = client.get(f"/api/v1/portfolios/{portfolio.id}", headers=_auth_header(token))
+        assert resp.status_code == 200
+
+    def test_nonexistent_portfolio_returns_404(self, client):
+        resp = client.get(f"/api/v1/portfolios/{uuid.uuid4()}")
+        assert resp.status_code == 404
+
+
+class TestGetHoldings:
+    def test_returns_holdings_for_public_portfolio(self, client):
+        user_id, _ = _register_and_login(client, "holdings-owner@example.com", "holdingsowner")
+        portfolio = _make_portfolio(user_id, is_public=True)
+        holding = Holding(
+            portfolio_id=portfolio.id,
+            symbol="RELIANCE",
+            isin="INE002A01018",
+            exchange="NSE",
+            quantity=10,
+            avg_cost_price=2500,
+            sector="Energy",
+            market_cap_category="large",
+            as_of_date=date(2026, 7, 25),
+        )
+        db.session.add(holding)
+        db.session.commit()
+
+        resp = client.get(f"/api/v1/portfolios/{portfolio.id}/holdings")
+        assert resp.status_code == 200
+        data = resp.get_json()["data"]
+        assert len(data) == 1
+        assert data[0]["symbol"] == "RELIANCE"
+
+    def test_private_holdings_hidden_from_non_owner(self, client):
+        user_id, _ = _register_and_login(client, "holdings-priv@example.com", "holdingspriv")
+        portfolio = _make_portfolio(user_id, is_public=False)
+
+        resp = client.get(f"/api/v1/portfolios/{portfolio.id}/holdings")
+        assert resp.status_code == 404
+
+
+class TestGetAnalytics:
+    def test_no_snapshot_yet_returns_honestly_empty(self, client):
+        user_id, _ = _register_and_login(client, "analytics-empty@example.com", "analyticsempty")
+        portfolio = _make_portfolio(user_id, is_public=True)
+
+        resp = client.get(f"/api/v1/portfolios/{portfolio.id}/analytics")
+        assert resp.status_code == 200
+        data = resp.get_json()["data"]
+        assert data["total_value"] is None
+        assert data["health"] is None
+        assert data["sector_allocation"] == {}
+
+    def test_with_snapshot_returns_health_metrics(self, client):
+        user_id, _ = _register_and_login(client, "analytics-full@example.com", "analyticsfull")
+        portfolio = _make_portfolio(user_id, is_public=True)
+        snapshot = PortfolioSnapshot(
+            portfolio_id=portfolio.id,
+            snapshot_date=date(2026, 7, 25),
+            total_value=25000,
+            sector_allocation={"Energy": 1.0},
+            asset_allocation={"Equity": 1.0},
+            health_metrics={
+                "diversification_score": 0.0,
+                "sector_concentration_hhi": 1.0,
+                "portfolio_age_days": 0,
+                "holding_count": 1,
+            },
+        )
+        db.session.add(snapshot)
+        db.session.commit()
+
+        resp = client.get(f"/api/v1/portfolios/{portfolio.id}/analytics")
+        assert resp.status_code == 200
+        data = resp.get_json()["data"]
+        assert data["total_value"] == 25000.0
+        assert data["sector_allocation"] == {"Energy": 1.0}
+        assert data["health"]["sector_concentration_hhi"] == 1.0
+        assert data["as_of"] == "2026-07-25"
+        # No composite score, no volatility (ADR-007, ADR-008).
+        assert "score" not in data["health"]
+        assert "volatility" not in data["health"]
+
+
+class TestPatchPortfolio:
+    def test_owner_can_toggle_is_public(self, client):
+        user_id, token = _register_and_login(client, "patch-owner@example.com", "patchowner")
+        portfolio = _make_portfolio(user_id, is_public=False)
+
+        resp = client.patch(
+            f"/api/v1/portfolios/{portfolio.id}",
+            json={"is_public": True},
+            headers=_auth_header(token),
+        )
+        assert resp.status_code == 200
+        assert resp.get_json()["data"]["is_public"] is True
+
+    def test_non_owner_cannot_toggle(self, client):
+        user_id, _ = _register_and_login(client, "patch-owner2@example.com", "patchowner2")
+        portfolio = _make_portfolio(user_id, is_public=False)
+
+        _, other_token = _register_and_login(client, "patch-stranger@example.com", "patchstranger")
+        resp = client.patch(
+            f"/api/v1/portfolios/{portfolio.id}",
+            json={"is_public": True},
+            headers=_auth_header(other_token),
+        )
+        assert resp.status_code == 404
+
+    def test_requires_auth(self, client):
+        user_id, _ = _register_and_login(client, "patch-owner3@example.com", "patchowner3")
+        portfolio = _make_portfolio(user_id, is_public=False)
+
+        resp = client.patch(f"/api/v1/portfolios/{portfolio.id}", json={"is_public": True})
+        assert resp.status_code == 401
+
+    def test_missing_is_public_field(self, client):
+        user_id, token = _register_and_login(client, "patch-owner4@example.com", "patchowner4")
+        portfolio = _make_portfolio(user_id, is_public=False)
+
+        resp = client.patch(
+            f"/api/v1/portfolios/{portfolio.id}", json={}, headers=_auth_header(token)
+        )
+        assert resp.status_code == 400

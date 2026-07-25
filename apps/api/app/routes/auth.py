@@ -24,6 +24,7 @@ from flask_jwt_extended import (
 from marshmallow import ValidationError
 
 from app.schemas.auth import LoginSchema, RegisterSchema
+from app.services import audit_service
 from app.services.auth_service import AuthError, authenticate_user, register_user
 from app.utils.responses import error, success
 
@@ -100,6 +101,7 @@ def refresh():
     identity = get_jwt_identity()
     new_access_token = create_access_token(identity=identity)
     new_refresh_token = create_refresh_token(identity=identity)
+    audit_service.log_event(identity, "token_refresh")
 
     response, status_code = success({"access_token": new_access_token})
     set_refresh_cookies(response, new_refresh_token)

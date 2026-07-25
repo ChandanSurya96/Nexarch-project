@@ -20,6 +20,10 @@ htmlcov/
 .coverage
 coverage.xml
 
+# Flask instance folder — local runtime data (e.g. smoke_test.db), never
+# version-controlled per Flask's own convention.
+instance/
+
 # ─── Environment / Secrets ────────────────────────────────────────────────────
 .env
 .env.local

@@ -8,11 +8,11 @@
 
 Nexarch is India's portfolio identity and investor-discovery platform. Users connect a brokerage account (read-only) to generate a verified investing profile, and browse other investors by strategy, diversification, and consistency instead of by follower count. See [vision.md](./vision.md) for the full philosophy.
 
-## Current Status — Phase 0
+## Current Status — Phase 1, Milestone 2
 
-- **Stage:** Pre-development. This is architecture and documentation only — **no application code has been written yet.**
-- **Stack:** Next.js / TypeScript / Tailwind (frontend), Flask / SQLAlchemy / PostgreSQL (backend), Redis + a job queue (background sync), JWT auth.
-- **Next step:** Founder review of the decisions below, then Phase 1 implementation (see [roadmap.md](./roadmap.md)).
+- **Stage:** Active implementation. Milestone 1 (auth + schema foundation) and Milestone 2 (broker connection, sync worker, portfolio analytics) are built and tested, backend-only. See [changelog.md](./changelog.md) for what shipped in each.
+- **Stack:** Next.js / TypeScript / Tailwind (frontend, still scaffold-only), Flask / SQLAlchemy / PostgreSQL (backend), Redis + Celery (background sync), JWT auth.
+- **Next step:** Milestone 3 (Public Investor Library, discovery feed, follows) or Milestone 4 (frontend), per the phase breakdown in [roadmap.md](./roadmap.md) and [decisions.md](./decisions.md).
 
 Three findings from this round of research changed the plan materially enough that they're worth knowing before you read anything else:
 

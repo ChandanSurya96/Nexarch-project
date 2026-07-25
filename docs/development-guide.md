@@ -29,6 +29,12 @@ cp .env.example .env   # fill in local values
 flask db upgrade        # run migrations
 flask run
 
+# sync worker (separate terminal, from apps/api — Milestone 2+)
+celery -A app.celery_app worker --loglevel=info
+
+# scheduled daily sync (separate terminal, from apps/api — Milestone 2+)
+celery -A app.celery_app beat --loglevel=info
+
 # frontend (separate terminal)
 cd apps/web
 npm install
@@ -50,6 +56,7 @@ ENCRYPTION_KMS_KEY_ID=
 # broker integrations (per adapter — see broker-integrations.md)
 UPSTOX_API_KEY=
 UPSTOX_API_SECRET=
+UPSTOX_REDIRECT_URI=
 DHAN_API_KEY=
 ANGELONE_API_KEY=
 FYERS_API_KEY=
