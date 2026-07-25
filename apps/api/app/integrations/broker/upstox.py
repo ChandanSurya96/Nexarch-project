@@ -49,11 +49,12 @@ class UpstoxAdapter(BrokerAdapter):
         self._api_key = os.environ.get("UPSTOX_API_KEY", "")
         self._api_secret = os.environ.get("UPSTOX_API_SECRET", "")
 
-    def get_login_url(self, redirect_uri: str) -> str:
+    def get_login_url(self, redirect_uri: str, state: str) -> str:
         return (
             f"{_LOGIN_URL}?response_type=code"
             f"&client_id={self._api_key}"
             f"&redirect_uri={redirect_uri}"
+            f"&state={state}"
         )
 
     def exchange_code(self, auth_code: str, redirect_uri: str) -> TokenPair:

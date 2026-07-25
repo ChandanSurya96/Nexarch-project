@@ -74,12 +74,15 @@ Access tokens are short-lived (15 min); refresh tokens are longer-lived and stor
 GET    /api/v1/users/me
 PATCH  /api/v1/users/me
 GET    /api/v1/users/:username            # public profile
+GET    /api/v1/users/me/portfolio         # the caller's own portfolio, or null
 ```
+
+`/users/me/portfolio` exists because every portfolio endpoint is keyed by `portfolio_id`, and there's no other way for the frontend to discover the signed-in user's own id. It returns the same shape as the Portfolio Detail Response below — or `data: null` (200, not a 404) when the user has no portfolio yet. That's a normal, expected state, not an error: a `Portfolio` row is only created lazily on a broker connection's first successful sync (see [broker-integrations.md](./broker-integrations.md)), so every new signup — and even a user who just finished connecting a broker seconds ago — legitimately has none for a little while. See ADR-019 in [decisions.md](./decisions.md).
 
 ### Broker Connections
 ```
 POST   /api/v1/broker-connections/init            { broker_name } → { redirect_url }
-POST   /api/v1/broker-connections/callback        { broker_name, auth_code }
+POST   /api/v1/broker-connections/callback        { broker_name, auth_code, state }
 GET    /api/v1/broker-connections
 DELETE /api/v1/broker-connections/:id
 POST   /api/v1/broker-connections/:id/sync        # manual "sync now", rate-limited
@@ -89,22 +92,43 @@ POST   /api/v1/broker-connections/:id/sync        # manual "sync now", rate-limi
 ```
 GET    /api/v1/portfolios/:id
 GET    /api/v1/portfolios/:id/holdings
-GET    /api/v1/portfolios/:id/analytics           # allocation, sector split, health metrics
-GET    /api/v1/portfolios/:id/history             # snapshots over time
+GET    /api/v1/portfolios/:id/analytics           # allocation, sector split, health metrics, strategy overview
+GET    /api/v1/portfolios/:id/activity            # descriptive diffs between consecutive syncs (ADR-015, Milestone 3)
+GET    /api/v1/portfolios/:id/profile             # detail + holdings + analytics + activity combined
+GET    /api/v1/portfolios/:id/history             # snapshots over time — not yet implemented, see feature-backlog.md
 PATCH  /api/v1/portfolios/:id                     # e.g. toggle is_public
 ```
+
+`/profile` is additive, not a replacement — it exists for a single profile-page fetch, wrapping the same four sections the separate endpoints already return:
+```json
+GET /api/v1/portfolios/9f2c.../profile
+
+{
+  "data": {
+    "portfolio": { "id": "9f2c...", "portfolio_type": "verified", "is_public": true, "display_name": "...", "strategy_tags": [...], "created_at": "...", "updated_at": "..." },
+    "holdings": [ { "id": "...", "symbol": "...", ... } ],
+    "analytics": { "portfolio_id": "9f2c...", "total_value": 1245000, "sector_allocation": {...}, "health": {...}, "strategy_overview": "...", "as_of": "2026-07-13" },
+    "activity": [ { "from_date": "...", "to_date": "...", "sector_changes": [...], "holding_count_change": null, "summary": "..." } ]
+  },
+  "meta": {},
+  "error": null
+}
+```
+Powered by `app/services/portfolio_profile_service.py`, which coordinates `analytics_service`, `activity_service`, and `strategy_overview_service` — the separate endpoints call the same underlying pieces, so the two paths can never disagree with each other.
 
 ### Discovery
 ```
 GET    /api/v1/discovery/investors                # filterable, paginated feed
 GET    /api/v1/discovery/strategy-categories
 ```
+Each item in `/discovery/investors` is the same shape as the Portfolio Detail Response below, plus a `health` field (the latest synced health metrics, or `null`) — see the note there on why the shapes are kept identical rather than maintained separately.
 
 ### Public Investor Library
 ```
 GET    /api/v1/public-investors
 GET    /api/v1/public-investors/:slug
 ```
+Each entry includes `portfolio_id` (added Milestone 4c, ADR-022 in [decisions.md](./decisions.md)) — the linked `Portfolio`'s id, for navigating to its full holdings/allocation/health view at the Portfolio Detail Response shape below. `null` only if a `PublicInvestor` record has been created but not yet linked to a seeded portfolio, which shouldn't happen past the seed script (`scripts/seed_public_investors.py`) running.
 
 ### Follows
 ```
@@ -114,6 +138,28 @@ GET    /api/v1/users/me/following
 ```
 
 ## Example: Portfolio Detail Response
+
+```json
+GET /api/v1/portfolios/9f2c...
+
+{
+  "data": {
+    "id": "9f2c...",
+    "portfolio_type": "verified",
+    "is_public": true,
+    "display_name": "Rohan Mehta",
+    "strategy_tags": ["long-term", "value"],
+    "created_at": "2026-01-15T09:00:00+00:00",
+    "updated_at": "2026-07-25T02:00:00+00:00"
+  },
+  "meta": {},
+  "error": null
+}
+```
+
+`display_name` and `strategy_tags` (added when the discovery feed/follows/portfolio-detail contracts were stabilized ahead of Milestone 4) resolve identically everywhere a portfolio is serialized — the discovery feed, `GET /users/me/following`, and this detail endpoint all use the same underlying resolution (`app/services/portfolio_service.py`), so a portfolio never describes itself differently depending on which list it was reached from. `display_name` is the public investor's name for Public Investor Library entries, or the owning user's display name/username for verified portfolios.
+
+## Example: Portfolio Analytics Response
 
 ```json
 GET /api/v1/portfolios/9f2c.../analytics
@@ -129,6 +175,7 @@ GET /api/v1/portfolios/9f2c.../analytics
       "portfolio_age_days": 612,
       "holding_count": 14
     },
+    "strategy_overview": "Currently weighted toward Financials (31% of synced holdings), with exposure spread across other sectors as well, predominantly in large-cap holdings.",
     "as_of": "2026-07-13"
   },
   "meta": {},
@@ -136,7 +183,32 @@ GET /api/v1/portfolios/9f2c.../analytics
 }
 ```
 
-`diversification_score` and `sector_concentration_hhi` are computed directly from current holdings composition (see [database.md](./database.md), [product-requirements.md](./product-requirements.md)). Fields like true return volatility are intentionally absent here until a market-data dependency is resolved — see ADR-008 in [decisions.md](./decisions.md).
+`diversification_score` and `sector_concentration_hhi` are computed directly from current holdings composition (see [database.md](./database.md), [product-requirements.md](./product-requirements.md)). Fields like true return volatility are intentionally absent here until a market-data dependency is resolved — see ADR-008 in [decisions.md](./decisions.md). `strategy_overview` (added Milestone 3) is the rules-based Investor Strategy Overview from [product-requirements.md](./product-requirements.md) — descriptive-only wording, never a recommendation (see [security.md](./security.md)); `null` when there's not yet enough synced data to describe.
+
+## Example: Portfolio Activity Response
+
+```json
+GET /api/v1/portfolios/9f2c.../activity
+
+{
+  "data": [
+    {
+      "from_date": "2026-07-18",
+      "to_date": "2026-07-25",
+      "sector_changes": [
+        { "sector": "Financials", "before": 0.31, "after": 0.28 },
+        { "sector": "IT", "before": 0.24, "after": 0.27 }
+      ],
+      "holding_count_change": null,
+      "summary": "Between 2026-07-18 and 2026-07-25, sector allocation shifted: Financials 31%→28%, IT 24%→27%."
+    }
+  ],
+  "meta": {},
+  "error": null
+}
+```
+
+Computed on read by diffing consecutive `portfolio_snapshots` rows — see ADR-015 in [decisions.md](./decisions.md). Strictly descriptive: no attributed cause, no "auto-copy" language, no comments. Empty list until a portfolio has 2+ snapshots.
 
 ## Rate Limiting
 

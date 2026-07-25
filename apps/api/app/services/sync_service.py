@@ -28,6 +28,7 @@ from app.services.analytics_service import (
     compute_sector_allocation,
     compute_total_value,
 )
+from app.services.discovery_service import invalidate_discovery_cache
 from app.services.encryption_service import decrypt_token
 from app.services.normalization_service import normalize_holdings
 
@@ -108,6 +109,11 @@ def run_sync(broker_connection_id: str) -> None:
     connection.last_synced_at = datetime.now(UTC)
     connection.status = "active"
     db.session.commit()
+
+    # A successful sync may have changed this portfolio's discovery-feed
+    # standing (allocation, health, updated_at) — clear the cache so the
+    # feed reflects it on next read (see docs/architecture.md "Caching Strategy").
+    invalidate_discovery_cache()
 
     audit_service.log_event(
         connection.user_id,

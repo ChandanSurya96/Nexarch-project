@@ -8,19 +8,23 @@
 
 | Feature | Priority | Status | Notes |
 |---|---|---|---|
-| Auth: register/login/refresh/logout | P0 | Done (Milestone 1) | See [api.md](../api.md) |
+| Auth: register/login/refresh/logout | P0 | Backend done (Milestone 1); frontend done (Milestone 4a) | See [api.md](../api.md); login/register pages, silent refresh on load, in-memory-only access token (ADR-017) |
 | Database schema + initial migration | P0 | Done (Milestone 1; extended in Milestone 2 with `audit_logs`) | See [database.md](../database.md) |
-| Broker connection: Upstox (pilot broker) | P0 | Backend done (Milestone 2) | Free API, analytics token avoids daily reauth — see [broker-integrations.md](../broker-integrations.md) |
+| Broker connection: Upstox (pilot broker) | P0 | Done (Milestone 2 backend; Milestone 4b frontend) | Free API, analytics token avoids daily reauth — see [broker-integrations.md](../broker-integrations.md). Connect/reconnect/disconnect/sync-now UI in `app/profile/page.tsx`; a real OAuth round-trip couldn't be verified live in dev (no broker credentials) |
 | Sync worker (Celery) + normalization layer | P0 | Done (Milestone 2) | Shared `Holding` interface across adapters |
-| Verified profile page | P0 | Not started | Badge, holdings, allocation — frontend, Milestone 4 |
-| Public/private toggle | P0 | Backend done (Milestone 2) | `PATCH /api/v1/portfolios/:id`; private by default; frontend control not yet built. Gated on ADR-011 resolution for full public rollout |
-| Public Investor Library (seed data: 5 initial profiles) | P0 | Not started | Manual curation from public disclosures — Milestone 3 — see [product-requirements.md](../product-requirements.md) |
-| Discovery feed v1 (list + strategy filters) | P0 | Not started | Milestone 3. No "most followed" sort yet (cold start) |
-| Portfolio analytics: allocation, sector split, HHI diversification/concentration | P0 | Backend done (Milestone 2) | See calculation notes in [product-requirements.md](../product-requirements.md); no frontend display yet |
-| Portfolio Health card (no single score) | P1 | Backend done (Milestone 2) | Metrics computed per ADR-007; the actual UI card is a Milestone 4 frontend item |
-| Responsive layout + dark mode theme | P0 | Not started | Milestone 4 — see [design-system.md](../design-system.md) |
+| Verified profile page | P0 | Done (Milestone 4b) | `app/profile/page.tsx` (own) + `app/portfolios/[id]/page.tsx` (viewer) sharing `PortfolioProfileView`; Badge, holdings table, allocation chart, health stats |
+| Public/private toggle | P0 | Done (Milestone 2 backend; Milestone 4b frontend) | `PATCH /api/v1/portfolios/:id`; private by default; frontend control now live, behind a confirm `Modal`. Gated on ADR-011 resolution for full *public rollout* (the toggle itself works; the broker data-vending question is separate) |
+| Public Investor Library (seed data: 5 initial profiles) | P0 | Done (Milestone 3 backend; Milestone 4c frontend) | 5 real, cited profiles seeded via `scripts/seed_public_investors.py`; `app/library/page.tsx` lists them, linking to `app/portfolios/[id]/page.tsx` via the new `portfolio_id` field (ADR-022) |
+| Discovery feed v1 (list + strategy filters) | P0 | Done (Milestone 3 backend; Milestone 4c frontend) | No "most followed" sort yet (cold start, by design). `app/discover/page.tsx`: strategy chips, sort select, pagination |
+| Portfolio analytics: allocation, sector split, HHI diversification/concentration | P0 | Done (Milestone 2 backend; Milestone 4b frontend) | See calculation notes in [product-requirements.md](../product-requirements.md); rendered via `AllocationChart` + `StatCard` grid |
+| Portfolio Health card (no single score) | P1 | Done (Milestone 2 backend; Milestone 4b frontend) | Metrics computed per ADR-007; rendered as four independent `StatCard`s, never a composite number |
+| Investor Strategy Overview (rules-based) | P1 | Done (Milestone 3 backend; Milestone 4b frontend) | Folded into `GET /portfolios/:id/analytics`; descriptive-only per [security.md](../security.md); shown as plain text on the profile page |
+| Following (follow/unfollow, no capital) | P0 | Done (Milestone 3 backend; Milestone 4b frontend) | `POST/DELETE /portfolios/:id/follow`, `GET /users/me/following`; follow status derived client-side from the following list (no per-portfolio `is_following` field in `PortfolioSchema` yet) |
+| Portfolio activity (snapshot-diff, ADR-015) | — | Backend done (Milestone 3) | Not in the original Phase 1 backlog — added during Milestone 3 as the compliant subset of a Parrot Finance/Dub-inspired design exploration. `GET /portfolios/:id/activity` |
+| Responsive layout + dark mode theme | P0 | Dark theme done (Milestone 4a); responsive checked on Discover/Library (Milestone 4c) | Design tokens + Tailwind wired up (dark-only, no toggle yet). `app/discover` and `app/library` — the pages `design-system.md` calls out by name for mobile-first design — checked at a narrow viewport this milestone; the profile pages (4b) still haven't had a dedicated pass |
 | Second broker connection: Dhan | P1 | Not started | Milestone 5. Free, generous rate limit |
 | Account Aggregator integration spike | P1 | Not started | Milestone 5, pending founder decision on FIU-registration path. Parallel evaluation per ADR-010 — timebox to validate feasibility before committing further |
+| Portfolio history (`GET .../history`, raw snapshots over time) | — | Not started | Documented in [api.md](../api.md) since Phase 0, never built; distinct from the new `.../activity` endpoint (raw data vs. descriptive diff) |
 
 ## Phase 2 — Advanced Analytics & Comparisons
 

@@ -44,16 +44,20 @@ sequenceDiagram
 
     U->>N: Click "Connect Broker"
     N->>A: POST /broker-connections/init
-    A-->>N: Broker login URL
+    A->>A: Generate + store single-use state token (Redis, ADR-023)
+    A-->>N: Broker login URL (includes state)
     N->>B: Redirect to broker's own login page
     U->>B: Enters broker credentials directly with the broker
-    B-->>N: Redirect back with an auth code
-    N->>A: POST /broker-connections/callback (auth code)
+    B-->>N: Redirect back with an auth code + the same state
+    N->>A: POST /broker-connections/callback (auth code, state)
+    A->>A: Verify + consume state, or reject as INVALID_OAUTH_STATE
     A->>B: Exchange auth code for access token
     B-->>A: Access token (+ refresh token where supported)
     A->>A: Encrypt and store token
     A-->>N: Connection success, initial sync queued
 ```
+
+The `state` round-trip (ADR-023) is what stops the callback from accepting a tampered-with or replayed redirect — a bare auth-code exchange authenticated only by the caller's JWT doesn't prove *this specific* connect attempt is the one the JWT-holder actually initiated.
 
 The user's broker password never reaches Nexarch in this flow — only the exchanged token does. Groww's model differs (the user generates a token in their own Groww settings and pastes/authorizes it), which needs its own slightly different UI flow, documented per-adapter rather than forced into the same screen as the redirect-based brokers.
 

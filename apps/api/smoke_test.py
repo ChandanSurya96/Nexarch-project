@@ -9,6 +9,7 @@ import os
 import sys
 from datetime import UTC, datetime, timedelta
 from unittest.mock import patch
+from urllib.parse import parse_qs, urlparse
 
 os.environ["DATABASE_URL"] = "sqlite:///smoke_test.db"
 os.environ["JWT_SECRET"] = "smoke-test-secret-key-32chars-ok!"
@@ -125,8 +126,8 @@ with app.test_client() as c:
     print("\n=== BROKER CONNECT ===")
 
     class _FakeAdapter:
-        def get_login_url(self, redirect_uri):
-            return f"https://fake-upstox.example/login?redirect_uri={redirect_uri}"
+        def get_login_url(self, redirect_uri, state):
+            return f"https://fake-upstox.example/login?redirect_uri={redirect_uri}&state={state}"
 
         def exchange_code(self, auth_code, redirect_uri):
             return TokenPair(
@@ -146,6 +147,10 @@ with app.test_client() as c:
                 )
             ]
 
+    # Redis (used for the OAuth state token, ADR-023) faked with a plain dict
+    # so this script stays "no external server, database, or Docker needed."
+    _redis_store: dict[str, str] = {}
+
     # Re-login since the previous access token was minted before this point
     # (re-using it is fine too, but this mirrors a fresh authenticated session).
     with (
@@ -158,6 +163,17 @@ with app.test_client() as c:
             return_value=_FakeAdapter(),
         ),
         patch("app.tasks.sync.sync_portfolio_task.delay") as mock_delay,
+        patch(
+            "app.services.broker_connection_service.redis_client.get", _redis_store.get
+        ),
+        patch(
+            "app.services.broker_connection_service.redis_client.set",
+            lambda key, value, ex=None: _redis_store.__setitem__(key, value),
+        ),
+        patch(
+            "app.services.broker_connection_service.redis_client.delete",
+            lambda key: _redis_store.pop(key, None),
+        ),
     ):
         r = c.post(
             "/api/v1/broker-connections/init",
@@ -167,10 +183,11 @@ with app.test_client() as c:
         body = r.get_json()
         check("init status 200", r.status_code == 200, r.status_code)
         check("init redirect_url present", "redirect_url" in body["data"])
+        state = parse_qs(urlparse(body["data"]["redirect_url"]).query)["state"][0]
 
         r = c.post(
             "/api/v1/broker-connections/callback",
-            json={"broker_name": "upstox", "auth_code": "good-code"},
+            json={"broker_name": "upstox", "auth_code": "good-code", "state": state},
             headers={"Authorization": f"Bearer {new_access_token}"},
         )
         body = r.get_json()

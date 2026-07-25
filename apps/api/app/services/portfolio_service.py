@@ -54,9 +54,49 @@ def update_visibility(user_id: uuid.UUID, portfolio_id: uuid.UUID, is_public: bo
     return portfolio
 
 
+def get_my_portfolio(user_id: uuid.UUID) -> Portfolio | None:
+    """The signed-in user's own portfolio, or None.
+
+    None is a normal, expected state (ADR-019) — a Portfolio row is only
+    created lazily on first successful sync (see sync_service.run_sync), so
+    every new signup, and even a user who just finished a broker connection
+    seconds ago, legitimately has no Portfolio yet.
+    """
+    return Portfolio.query.filter_by(user_id=user_id).first()
+
+
 def get_latest_snapshot(portfolio_id: uuid.UUID) -> PortfolioSnapshot | None:
     return (
         PortfolioSnapshot.query.filter_by(portfolio_id=portfolio_id)
         .order_by(PortfolioSnapshot.snapshot_date.desc())
         .first()
     )
+
+
+# ── Shared serialization helpers ──────────────────────────────────────────────
+# Used by both PortfolioSchema (app/schemas/portfolio.py) and
+# discovery_service.py, so the detail view, the following list, and the
+# discovery feed describe a portfolio identically wherever they overlap.
+
+
+def resolve_display_name(portfolio: Portfolio) -> str:
+    """'Whose portfolio is this' — the public investor's name, or the
+    owning user's display name/username."""
+    if portfolio.portfolio_type == "public" and portfolio.public_investor is not None:
+        return portfolio.public_investor.name
+    if portfolio.user is not None:
+        return portfolio.user.display_name or portfolio.user.username
+    return "Unknown"
+
+
+def resolve_strategy_tag_slugs(portfolio: Portfolio) -> list[str]:
+    return [tag.strategy_category.slug for tag in portfolio.strategy_tags]
+
+
+def resolve_latest_health(portfolio: Portfolio) -> dict | None:
+    """The most recent snapshot's health_metrics, or None if nothing has
+    synced yet — honestly absent, not a fabricated default."""
+    if not portfolio.snapshots:
+        return None
+    latest = max(portfolio.snapshots, key=lambda s: s.snapshot_date)
+    return latest.health_metrics

@@ -125,9 +125,7 @@ class TestLogin:
         assert resp.get_json()["error"]["code"] == "INVALID_CREDENTIALS"
 
     def test_login_unknown_email(self, client):
-        resp = client.post(
-            LOGIN_URL, json={"email": "nobody@example.com", "password": "Secure123"}
-        )
+        resp = client.post(LOGIN_URL, json={"email": "nobody@example.com", "password": "Secure123"})
         assert resp.status_code == 401
         # Same error code for unknown email and wrong password (timing-safe).
         assert resp.get_json()["error"]["code"] == "INVALID_CREDENTIALS"

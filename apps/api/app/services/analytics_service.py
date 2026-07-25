@@ -52,6 +52,23 @@ def compute_sector_allocation(holdings: list[Holding]) -> dict[str, float]:
     return {sector: round(value / total, 4) for sector, value in totals_by_sector.items()}
 
 
+def compute_market_cap_allocation(holdings: list[Holding]) -> dict[str, float]:
+    """Market-cap category -> fraction of total value (0..1). Unmapped
+    categories group as "Other" (see the sector_mapping limitation, ADR-013)."""
+    total = sum(_holding_value(h) for h in holdings)
+    if total <= 0:
+        return {}
+
+    totals_by_category: dict[str, float] = {}
+    for holding in holdings:
+        category = holding.market_cap_category or "Other"
+        totals_by_category[category] = totals_by_category.get(category, 0.0) + _holding_value(
+            holding
+        )
+
+    return {category: round(value / total, 4) for category, value in totals_by_category.items()}
+
+
 def compute_asset_allocation(holdings: list[Holding]) -> dict[str, float]:
     """See module docstring — every holding synced so far is equity."""
     if not holdings:

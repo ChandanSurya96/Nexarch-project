@@ -189,3 +189,81 @@ class TestPatchPortfolio:
             f"/api/v1/portfolios/{portfolio.id}", json={}, headers=_auth_header(token)
         )
         assert resp.status_code == 400
+
+
+class TestCompleteProfile:
+    """GET /portfolios/:id/profile — new, additive endpoint powered by
+    PortfolioProfileService.get_complete_profile. Combines the same data the
+    four separate endpoints already return; these tests confirm the
+    combination is correct, not the underlying computations (those are
+    covered by test_analytics_service.py / test_activity_service.py /
+    test_strategy_overview_service.py)."""
+
+    def test_happy_path_combines_all_sections(self, client):
+        user_id, _ = _register_and_login(client, "profile-owner@example.com", "profileowner")
+        portfolio = _make_portfolio(user_id, is_public=True)
+        holding = Holding(
+            portfolio_id=portfolio.id,
+            symbol="RELIANCE",
+            isin="INE002A01018",
+            exchange="NSE",
+            quantity=10,
+            avg_cost_price=2500,
+            sector="Energy",
+            market_cap_category="large",
+            as_of_date=date(2026, 7, 25),
+        )
+        db.session.add(holding)
+        snapshot = PortfolioSnapshot(
+            portfolio_id=portfolio.id,
+            snapshot_date=date(2026, 7, 25),
+            total_value=25000,
+            sector_allocation={"Energy": 1.0},
+            asset_allocation={"Equity": 1.0},
+            health_metrics={
+                "diversification_score": 0.0,
+                "sector_concentration_hhi": 1.0,
+                "portfolio_age_days": 0,
+                "holding_count": 1,
+            },
+        )
+        db.session.add(snapshot)
+        db.session.commit()
+
+        resp = client.get(f"/api/v1/portfolios/{portfolio.id}/profile")
+        assert resp.status_code == 200
+        data = resp.get_json()["data"]
+
+        assert data["portfolio"]["id"] == str(portfolio.id)
+        assert len(data["holdings"]) == 1
+        assert data["holdings"][0]["symbol"] == "RELIANCE"
+        assert data["analytics"]["health"]["sector_concentration_hhi"] == 1.0
+        assert data["analytics"]["strategy_overview"] is not None
+        assert data["activity"] == []  # only one snapshot — no diff yet
+
+    def test_no_snapshot_yet_is_honestly_empty(self, client):
+        user_id, _ = _register_and_login(client, "profile-empty@example.com", "profileempty")
+        portfolio = _make_portfolio(user_id, is_public=True)
+
+        resp = client.get(f"/api/v1/portfolios/{portfolio.id}/profile")
+        assert resp.status_code == 200
+        data = resp.get_json()["data"]
+        assert data["holdings"] == []
+        assert data["analytics"]["total_value"] is None
+        assert data["analytics"]["health"] is None
+        assert data["activity"] == []
+
+    def test_private_portfolio_returns_404(self, client):
+        user_id, _ = _register_and_login(client, "profile-priv@example.com", "profilepriv")
+        portfolio = _make_portfolio(user_id, is_public=False)
+
+        resp = client.get(f"/api/v1/portfolios/{portfolio.id}/profile")
+        assert resp.status_code == 404
+        assert resp.get_json()["error"]["code"] == "PORTFOLIO_NOT_FOUND"
+
+    def test_owner_can_view_own_private_profile(self, client):
+        user_id, token = _register_and_login(client, "profile-owner2@example.com", "profileowner2")
+        portfolio = _make_portfolio(user_id, is_public=False)
+
+        resp = client.get(f"/api/v1/portfolios/{portfolio.id}/profile", headers=_auth_header(token))
+        assert resp.status_code == 200

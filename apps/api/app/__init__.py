@@ -11,7 +11,7 @@ import os
 from dotenv import load_dotenv
 from flask import Flask
 
-from app.extensions import bcrypt, db, jwt, migrate
+from app.extensions import bcrypt, db, jwt, migrate, redis_client
 
 
 def create_app(config_name: str | None = None) -> Flask:
@@ -40,16 +40,21 @@ def create_app(config_name: str | None = None) -> Flask:
     jwt.init_app(app)
     bcrypt.init_app(app)
     migrate.init_app(app, db)
+    redis_client.init_app(app)
 
     # ── Register blueprints ───────────────────────────────────────────────────
     from app.routes.auth import auth_bp
     from app.routes.broker_connections import broker_connections_bp
+    from app.routes.discovery import discovery_bp
     from app.routes.portfolios import portfolios_bp
+    from app.routes.public_investors import public_investors_bp
     from app.routes.users import users_bp
 
     app.register_blueprint(auth_bp, url_prefix="/api/v1/auth")
     app.register_blueprint(users_bp, url_prefix="/api/v1/users")
     app.register_blueprint(broker_connections_bp, url_prefix="/api/v1/broker-connections")
     app.register_blueprint(portfolios_bp, url_prefix="/api/v1/portfolios")
+    app.register_blueprint(discovery_bp, url_prefix="/api/v1/discovery")
+    app.register_blueprint(public_investors_bp, url_prefix="/api/v1/public-investors")
 
     return app

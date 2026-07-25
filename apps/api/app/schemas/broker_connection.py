@@ -10,6 +10,9 @@ class BrokerConnectionInitSchema(Schema):
 class BrokerConnectionCallbackSchema(Schema):
     broker_name = fields.String(required=True, validate=validate.Length(min=1, max=50))
     auth_code = fields.String(required=True, validate=validate.Length(min=1))
+    # CSRF/replay protection (ADR-023) — echoed back by the broker unchanged,
+    # verified against what init_connection issued for this user/broker.
+    state = fields.String(required=True, validate=validate.Length(min=1))
 
 
 class BrokerConnectionSchema(Schema):

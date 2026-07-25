@@ -112,7 +112,7 @@ erDiagram
     AUDIT_LOGS {
         uuid id PK
         uuid user_id FK
-        string event_type "connect | disconnect | sync | login | token_refresh"
+        string event_type "connect | reconnect | disconnect | sync | login | token_refresh"
         jsonb metadata
         timestamp created_at
     }

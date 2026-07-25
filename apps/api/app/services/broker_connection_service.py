@@ -6,11 +6,13 @@ See docs/broker-integrations.md "Auth Flow" and docs/product-requirements.md
 
 from __future__ import annotations
 
+import json
 import os
+import secrets
 import uuid
 from datetime import UTC, datetime, timedelta
 
-from app.extensions import db
+from app.extensions import db, redis_client
 from app.integrations.broker.base import BrokerAuthError
 from app.integrations.broker.registry import UnsupportedBrokerError, get_adapter
 from app.models.broker_connection import BrokerConnection
@@ -24,6 +26,12 @@ from app.services.encryption_service import encrypt_token
 # without extra schema surface (see docs/database.md's own "don't add unused
 # schema surface area" design principle).
 MANUAL_SYNC_COOLDOWN_SECONDS = 300
+
+# How long an in-flight OAuth connect attempt has to complete before its
+# state token expires (ADR-023) — generous enough for a real broker login,
+# short enough that an abandoned attempt doesn't linger.
+OAUTH_STATE_TTL_SECONDS = 600
+_OAUTH_STATE_KEY_PREFIX = "oauth_state:"
 
 
 class BrokerConnectionError(Exception):
@@ -42,22 +50,74 @@ def _redirect_uri_for(broker_name: str) -> str:
     return redirect_uri
 
 
-def init_connection(broker_name: str) -> str:
-    """Return the broker login URL for the frontend to redirect the user to."""
+def init_connection(user_id: uuid.UUID, broker_name: str) -> str:
+    """Return the broker login URL for the frontend to redirect the user to.
+
+    Generates a single-use `state` token (ADR-023) and stores it in Redis,
+    keyed to this user and broker, so handle_callback can verify the redirect
+    that comes back wasn't tampered with or replayed against a different
+    session before exchanging the auth code.
+    """
     try:
         adapter = get_adapter(broker_name)
     except UnsupportedBrokerError as exc:
         raise BrokerConnectionError("UNSUPPORTED_BROKER", str(exc), 400) from exc
 
-    return adapter.get_login_url(_redirect_uri_for(broker_name))
+    state = secrets.token_urlsafe(32)
+    redis_client.set(
+        f"{_OAUTH_STATE_KEY_PREFIX}{state}",
+        json.dumps({"user_id": str(user_id), "broker_name": broker_name}),
+        ex=OAUTH_STATE_TTL_SECONDS,
+    )
+
+    return adapter.get_login_url(_redirect_uri_for(broker_name), state)
 
 
-def handle_callback(user_id: uuid.UUID, broker_name: str, auth_code: str) -> BrokerConnection:
+def _consume_oauth_state(user_id: uuid.UUID, broker_name: str, state: str) -> None:
+    """Verify `state` was the one issued to this user for this broker, then
+    delete it — single-use, per the OAuth2 `state` convention.
+
+    Raises BrokerConnectionError(INVALID_OAUTH_STATE) if the state is
+    missing, expired, or doesn't match this user/broker — this is exactly
+    the CSRF/replay protection a bare auth-code exchange doesn't have.
+    """
+    key = f"{_OAUTH_STATE_KEY_PREFIX}{state}"
+    stored = redis_client.get(key)
+    if stored is None:
+        raise BrokerConnectionError(
+            "INVALID_OAUTH_STATE",
+            "This connection request has expired or is invalid. Please try connecting again.",
+            400,
+        )
+
+    payload = json.loads(stored)
+    redis_client.delete(key)  # single-use regardless of outcome
+
+    if payload.get("user_id") != str(user_id) or payload.get("broker_name") != broker_name:
+        raise BrokerConnectionError(
+            "INVALID_OAUTH_STATE",
+            "This connection request has expired or is invalid. Please try connecting again.",
+            400,
+        )
+
+
+def handle_callback(
+    user_id: uuid.UUID, broker_name: str, auth_code: str, state: str
+) -> BrokerConnection:
     """Exchange the auth code, store the connection, and queue the initial sync.
 
     Per docs/product-requirements.md: the initial sync must be queued within
     seconds of a successful callback, not left for the next scheduled run.
+
+    Reconnecting the same broker (e.g. after an expired token) updates the
+    existing connection in place rather than inserting a second row for the
+    same (user_id, broker_name) — a second row would have no Portfolio linked
+    yet, and its first sync would create a *duplicate* Portfolio for a user
+    who already has one, silently splitting their holdings/history across two
+    identities (see ADR-021).
     """
+    _consume_oauth_state(user_id, broker_name, state)
+
     try:
         adapter = get_adapter(broker_name)
     except UnsupportedBrokerError as exc:
@@ -68,21 +128,27 @@ def handle_callback(user_id: uuid.UUID, broker_name: str, auth_code: str) -> Bro
     except BrokerAuthError as exc:
         raise BrokerConnectionError("BROKER_AUTH_FAILED", str(exc), 400) from exc
 
-    connection = BrokerConnection(
-        user_id=user_id,
-        broker_name=broker_name,
-        connection_method="broker_api",
-        access_token_encrypted=encrypt_token(tokens.access_token),
-        refresh_token_encrypted=(
-            encrypt_token(tokens.refresh_token) if tokens.refresh_token else None
-        ),
-        status="active",
-        token_expires_at=tokens.expires_at,
+    connection = BrokerConnection.query.filter_by(user_id=user_id, broker_name=broker_name).first()
+    is_new = connection is None
+    if connection is None:
+        connection = BrokerConnection(
+            user_id=user_id, broker_name=broker_name, connection_method="broker_api"
+        )
+        db.session.add(connection)
+
+    connection.access_token_encrypted = encrypt_token(tokens.access_token)
+    connection.refresh_token_encrypted = (
+        encrypt_token(tokens.refresh_token) if tokens.refresh_token else None
     )
-    db.session.add(connection)
+    connection.status = "active"
+    connection.token_expires_at = tokens.expires_at
     db.session.commit()
 
-    audit_service.log_event(user_id, "connect", {"broker_connection_id": str(connection.id)})
+    audit_service.log_event(
+        user_id,
+        "connect" if is_new else "reconnect",
+        {"broker_connection_id": str(connection.id)},
+    )
 
     # Queue immediately — not the next scheduled beat run.
     from app.tasks.sync import sync_portfolio_task

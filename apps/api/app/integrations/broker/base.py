@@ -63,8 +63,14 @@ class BrokerAdapter(ABC):
     broker_name: str
 
     @abstractmethod
-    def get_login_url(self, redirect_uri: str) -> str:
-        """Build the URL the frontend redirects the user to for broker login."""
+    def get_login_url(self, redirect_uri: str, state: str) -> str:
+        """Build the URL the frontend redirects the user to for broker login.
+
+        `state` is an opaque, single-use, server-generated CSRF token (see
+        broker_connection_service.init_connection/handle_callback) — the
+        broker is expected to echo it back unchanged on redirect, per the
+        OAuth2 `state` parameter convention.
+        """
 
     @abstractmethod
     def exchange_code(self, auth_code: str, redirect_uri: str) -> TokenPair:

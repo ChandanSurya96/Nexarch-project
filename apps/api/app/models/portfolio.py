@@ -40,11 +40,11 @@ class Portfolio(db.Model):
         index=True,
     )
     # Nullable — NULL for user portfolios.
-    # public_investors table is added in a later milestone; FK added then.
     public_investor_id: Mapped[uuid.UUID | None] = mapped_column(
         Uuid(as_uuid=True),
+        ForeignKey("public_investors.id", ondelete="CASCADE"),
         nullable=True,
-        # index added when public_investors table exists (Milestone 2+)
+        index=True,
     )
     broker_connection_id: Mapped[uuid.UUID | None] = mapped_column(
         Uuid(as_uuid=True),
@@ -85,6 +85,12 @@ class Portfolio(db.Model):
     )
     snapshots: Mapped[list["PortfolioSnapshot"]] = relationship(  # noqa: F821
         "PortfolioSnapshot", back_populates="portfolio", cascade="all, delete-orphan"
+    )
+    public_investor: Mapped["PublicInvestor | None"] = relationship(  # noqa: F821
+        "PublicInvestor", back_populates="portfolio"
+    )
+    strategy_tags: Mapped[list["PortfolioStrategyTag"]] = relationship(  # noqa: F821
+        "PortfolioStrategyTag", back_populates="portfolio", cascade="all, delete-orphan"
     )
 
     def __repr__(self) -> str:

@@ -47,8 +47,9 @@ def init():
     except ValidationError as exc:
         return error("VALIDATION_ERROR", str(exc.messages), 400)
 
+    user_id = uuid.UUID(get_jwt_identity())
     try:
-        redirect_url = init_connection(data["broker_name"])
+        redirect_url = init_connection(user_id, data["broker_name"])
     except BrokerConnectionError as exc:
         return error(exc.code, exc.message, exc.status)
 
@@ -65,7 +66,7 @@ def callback():
 
     user_id = uuid.UUID(get_jwt_identity())
     try:
-        connection = handle_callback(user_id, data["broker_name"], data["auth_code"])
+        connection = handle_callback(user_id, data["broker_name"], data["auth_code"], data["state"])
     except BrokerConnectionError as exc:
         return error(exc.code, exc.message, exc.status)
 

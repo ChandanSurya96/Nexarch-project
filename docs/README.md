@@ -8,11 +8,11 @@
 
 Nexarch is India's portfolio identity and investor-discovery platform. Users connect a brokerage account (read-only) to generate a verified investing profile, and browse other investors by strategy, diversification, and consistency instead of by follower count. See [vision.md](./vision.md) for the full philosophy.
 
-## Current Status — Phase 1, Milestone 2
+## Current Status — Phase 1 feature-complete (Milestone 4c done)
 
-- **Stage:** Active implementation. Milestone 1 (auth + schema foundation) and Milestone 2 (broker connection, sync worker, portfolio analytics) are built and tested, backend-only. See [changelog.md](./changelog.md) for what shipped in each.
-- **Stack:** Next.js / TypeScript / Tailwind (frontend, still scaffold-only), Flask / SQLAlchemy / PostgreSQL (backend), Redis + Celery (background sync), JWT auth.
-- **Next step:** Milestone 3 (Public Investor Library, discovery feed, follows) or Milestone 4 (frontend), per the phase breakdown in [roadmap.md](./roadmap.md) and [decisions.md](./decisions.md).
+- **Stage:** Milestones 1–4c are built and verified against the live stack: auth + schema; broker connection, sync worker, portfolio analytics; Public Investor Library, discovery feed, follows, portfolio activity (backend, Milestone 3); frontend foundation + auth (4a); verified profile page + broker connection flow (4b); Discovery Feed and Public Investor Library pages (4c). `docs/roadmap.md`'s Phase 1 exit criteria — a real user can go from signup to a public, verified profile with holdings visible, end to end, and browse other investors — is now true. See [changelog.md](./changelog.md) for what shipped in each.
+- **Stack:** Next.js / TypeScript / Tailwind (frontend, fully wired to the backend for every Phase 1 feature), Flask / SQLAlchemy / PostgreSQL (backend), Redis + Celery (background sync + discovery-feed cache), JWT auth.
+- **Next step:** Phase 2's first slice — deeper health metrics and the market-data-vendor decision deferred since ADR-008 — or a second broker/Account Aggregator integration, per the phase breakdown in [roadmap.md](./roadmap.md) and [decisions.md](./decisions.md).
 
 Three findings from this round of research changed the plan materially enough that they're worth knowing before you read anything else:
 

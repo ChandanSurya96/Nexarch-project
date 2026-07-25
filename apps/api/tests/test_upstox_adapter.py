@@ -26,12 +26,13 @@ def _mock_response(status_code: int, json_body: dict):
 
 
 class TestGetLoginUrl:
-    def test_contains_redirect_uri(self, monkeypatch):
+    def test_contains_redirect_uri_and_state(self, monkeypatch):
         monkeypatch.setenv("UPSTOX_API_KEY", "test-client-id")
         adapter = UpstoxAdapter()
-        url = adapter.get_login_url("http://localhost:3000/broker-callback")
+        url = adapter.get_login_url("http://localhost:3000/broker-callback", "test-state-token")
         assert "client_id=test-client-id" in url
         assert "redirect_uri=http://localhost:3000/broker-callback" in url
+        assert "state=test-state-token" in url
 
 
 class TestExchangeCode:

@@ -14,6 +14,9 @@ marshmallow==3.23.1
 
 # ─── Background jobs ──────────────────────────────────────────────────────────
 celery[redis]==5.4.0
+# Pinned explicitly (not just relied on as celery[redis]'s transitive dep)
+# since app/extensions.py now imports it directly for the discovery-feed cache.
+redis==5.3.1
 
 # ─── Config ───────────────────────────────────────────────────────────────────
 python-dotenv==1.0.1
