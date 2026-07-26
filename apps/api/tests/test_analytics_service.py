@@ -7,15 +7,20 @@ example: "A single-sector portfolio scores 1.0 (maximally concentrated)."
 import uuid
 from datetime import date
 
+import pytest
+
 from app.models.holding import Holding
 from app.models.portfolio_snapshot import PortfolioSnapshot
 from app.services.analytics_service import (
+    compute_allocation_diff,
     compute_asset_allocation,
     compute_diversification_score,
+    compute_health_diff,
     compute_health_metrics,
     compute_hhi,
     compute_portfolio_age_days,
     compute_portfolio_volatility,
+    compute_scalar_diff,
     compute_sector_allocation,
     compute_total_value,
     compute_volatility,
@@ -204,3 +209,93 @@ class TestComputePortfolioVolatility:
         )
         b_volatility = compute_volatility(varying_closes)
         assert result == round(b_volatility / 2, 4)
+
+
+class TestScalarDiff:
+    def test_delta_is_b_minus_a(self):
+        assert compute_scalar_diff(10.0, 15.0) == {"a": 10.0, "b": 15.0, "delta": 5.0}
+
+    def test_negative_delta(self):
+        assert compute_scalar_diff(15.0, 10.0) == {"a": 15.0, "b": 10.0, "delta": -5.0}
+
+    def test_delta_none_when_a_is_none(self):
+        result = compute_scalar_diff(None, 10.0)
+        assert result == {"a": None, "b": 10.0, "delta": None}
+
+    def test_delta_none_when_b_is_none(self):
+        result = compute_scalar_diff(10.0, None)
+        assert result == {"a": 10.0, "b": None, "delta": None}
+
+    def test_delta_none_when_both_none(self):
+        assert compute_scalar_diff(None, None) == {"a": None, "b": None, "delta": None}
+
+
+class TestAllocationDiff:
+    def test_shared_sectors_diffed_directly(self):
+        diff = compute_allocation_diff({"Financials": 0.6}, {"Financials": 0.4})
+        assert diff == {"Financials": {"a": 0.6, "b": 0.4, "delta": -0.2}}
+
+    def test_sector_missing_from_one_side_defaults_to_zero(self):
+        # Absence is a known fact (0% of that portfolio), not missing data —
+        # unlike volatility's None-when-uncomputable convention.
+        diff = compute_allocation_diff({"Financials": 1.0}, {"IT": 1.0})
+        assert diff == {
+            "Financials": {"a": 1.0, "b": 0.0, "delta": -1.0},
+            "IT": {"a": 0.0, "b": 1.0, "delta": 1.0},
+        }
+
+    def test_both_empty(self):
+        assert compute_allocation_diff({}, {}) == {}
+
+    def test_none_side_is_unknown_not_zero(self):
+        # A whole side of None means "no snapshot at all" (portfolio_comparison_service
+        # signals this via total_value being None) — distinct from a real snapshot
+        # that simply holds 0% of some sector. Must not read as a fabricated "confirmed
+        # zero everywhere."
+        diff = compute_allocation_diff({"Financials": 1.0}, None)
+        assert diff == {"Financials": {"a": 1.0, "b": None, "delta": None}}
+
+    def test_both_none(self):
+        assert compute_allocation_diff(None, None) == {}
+
+
+class TestHealthDiff:
+    def _health(self, **overrides) -> dict:
+        base = {
+            "diversification_score": 0.7,
+            "sector_concentration_hhi": 0.3,
+            "portfolio_age_days": 100,
+            "holding_count": 10,
+            "volatility": 0.2,
+        }
+        base.update(overrides)
+        return base
+
+    def test_diffs_every_field(self):
+        diff = compute_health_diff(self._health(), self._health(holding_count=14, volatility=0.25))
+        assert diff["holding_count"] == {"a": 10, "b": 14, "delta": 4}
+        assert diff["volatility"] == {"a": 0.2, "b": 0.25, "delta": pytest.approx(0.05)}
+        assert diff["diversification_score"] == {"a": 0.7, "b": 0.7, "delta": 0.0}
+
+    def test_none_when_either_side_has_no_snapshot_yet(self):
+        diff = compute_health_diff(None, self._health())
+        for field in (
+            "diversification_score",
+            "sector_concentration_hhi",
+            "portfolio_age_days",
+            "holding_count",
+            "volatility",
+        ):
+            assert diff[field]["a"] is None
+            assert diff[field]["delta"] is None
+
+    def test_missing_volatility_key_treated_as_none(self):
+        # Pre-ADR-024 snapshots have no "volatility" key at all.
+        legacy_health = {
+            "diversification_score": 0.7,
+            "sector_concentration_hhi": 0.3,
+            "portfolio_age_days": 100,
+            "holding_count": 10,
+        }
+        diff = compute_health_diff(legacy_health, self._health())
+        assert diff["volatility"] == {"a": None, "b": 0.2, "delta": None}

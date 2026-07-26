@@ -31,7 +31,7 @@
 | Feature | Priority | Notes |
 |---|---|---|
 | Additional broker connections (Angel One, Fyers, Zerodha, Groww) | P1 | Not started — Milestone 8. Zerodha gated on data-vending clarification (ADR-011); Groww gated on validating user willingness to pay Groww's ₹499/mo API fee |
-| Portfolio comparison (side-by-side) | P1 | Not started — Milestone 6 |
+| Portfolio comparison (side-by-side) | P1 | Done — Milestone 6 | `GET /portfolios/compare?ids=a,b` (ADR-026), computed on read, no new table. Diffs total value, sector allocation, and health metrics; honestly-empty/`null` wherever a side has no snapshot (never a fabricated zero). Link-only entry from `InvestorCard`/portfolio detail page this milestone, no dedicated picker (ADR-027) |
 | Rules-based strategy auto-categorization | P1 | Not started — Milestone 7. Precedes AI-based version in Phase 3 |
 | Watchlists | P2 | Not started |
 | Market-data vendor selection for volatility metrics | P1 | Done — Milestone 5. Resolved via ADR-024: reused Upstox's own historical-candle API rather than a separate vendor. `health.volatility`, annualized, value-weighted; verified-portfolios only (see ADR-024's Public Investor Library limitation) |

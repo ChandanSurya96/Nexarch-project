@@ -10,6 +10,21 @@ Nothing pending beyond what's logged below — this section stays as the running
 
 ---
 
+## [2026-07-26] — Milestone 6: Portfolio Comparison (Phase 2)
+
+### Added
+- `GET /api/v1/portfolios/compare?ids=<uuid>,<uuid>` (ADR-026) — side-by-side analytics for two portfolios plus a computed diff (`total_value`, `sector_allocation`, `health`). Computed entirely on read from existing data; no new table or migration.
+- `analytics_service.compute_scalar_diff`/`compute_allocation_diff`/`compute_health_diff` — pure, nullable-safe diff functions. `compute_allocation_diff` distinguishes a sector genuinely at 0% (a real snapshot that just doesn't hold it) from a whole side having no snapshot at all (`None` — "unknown," not a fabricated zero).
+- `portfolio_comparison_service.py` (new) — coordinator reusing `portfolio_profile_service.get_detail`/`get_analytics_view` for each portfolio, same visibility rules as every other portfolio endpoint. Rejects comparing a portfolio to itself (`400 CANNOT_COMPARE_SAME_PORTFOLIO`).
+- Frontend: `lib/types/comparison.ts`, `usePortfolioComparison` hook, `PortfolioComparisonView` + `ComparisonStatRow` components, `/compare` page. Entry points: "Compare with mine" on `InvestorCard` (Discover + Library) and on the portfolio detail page, shown only when the viewer has their own portfolio and isn't viewing it (ADR-027 — link-only entry, no dedicated picker this milestone).
+- New `Feature: Portfolio Comparison` section in `docs/product-requirements.md` (didn't exist before this milestone).
+- 12 new backend tests (`TestScalarDiff`/`TestAllocationDiff`/`TestHealthDiff` in `test_analytics_service.py`; `TestCompare` in `test_portfolios.py`), 3 new frontend tests.
+
+### Notes
+- Manually verified end-to-end: seeded two verified portfolios with distinct sector allocations/health metrics, confirmed the `/compare` page's health table, both allocation charts, and the sector-diff callout render correctly; confirmed a verified-vs-unsynced-Public-Investor-Library comparison shows every field as honestly unknown (`—` / "Not enough data to compare"), not zeros — this caught and fixed a real bug where an unsynced side's missing sectors were defaulting to a fabricated `0.0` in the diff instead of `null`.
+
+---
+
 ## [2026-07-25] — Fix: nondeterministic latest-snapshot ordering (ADR-025)
 
 ### Added

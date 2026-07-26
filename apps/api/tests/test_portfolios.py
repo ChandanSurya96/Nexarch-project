@@ -414,3 +414,145 @@ class TestSnapshotOrdering:
         # Oldest-created-first within the same date.
         assert same_day_entries[0]["total_value"] == 25000.0
         assert same_day_entries[1]["total_value"] == 30000.0
+
+
+class TestCompare:
+    """GET /portfolios/compare?ids=a,b — Milestone 6. Reuses get_detail/
+    get_analytics_view (visibility already covered by TestGetPortfolio/
+    TestGetAnalytics) plus analytics_service's diff functions (their own
+    math covered by test_analytics_service.py) — these tests confirm the
+    comparison endpoint wires the two together correctly."""
+
+    def _snapshot(self, portfolio_id, total_value, sector_allocation, holding_count, volatility=None):
+        return PortfolioSnapshot(
+            portfolio_id=portfolio_id,
+            snapshot_date=date(2026, 7, 25),
+            total_value=total_value,
+            sector_allocation=sector_allocation,
+            asset_allocation={"Equity": 1.0},
+            health_metrics={
+                "diversification_score": 1 - sum(w**2 for w in sector_allocation.values()),
+                "sector_concentration_hhi": sum(w**2 for w in sector_allocation.values()),
+                "portfolio_age_days": 0,
+                "holding_count": holding_count,
+                "volatility": volatility,
+            },
+        )
+
+    def test_happy_path_returns_both_portfolios_and_diff(self, client):
+        user_a, _ = _register_and_login(client, "compare-a@example.com", "comparea")
+        user_b, _ = _register_and_login(client, "compare-b@example.com", "compareb")
+        portfolio_a = _make_portfolio(user_a, is_public=True)
+        portfolio_b = _make_portfolio(user_b, is_public=True)
+        db.session.add(self._snapshot(portfolio_a.id, 20000, {"Financials": 1.0}, 10, 0.15))
+        db.session.add(self._snapshot(portfolio_b.id, 25000, {"IT": 1.0}, 14, 0.25))
+        db.session.commit()
+
+        resp = client.get(f"/api/v1/portfolios/compare?ids={portfolio_a.id},{portfolio_b.id}")
+        assert resp.status_code == 200
+        data = resp.get_json()["data"]
+
+        assert data["portfolios"][0]["portfolio"]["id"] == str(portfolio_a.id)
+        assert data["portfolios"][1]["portfolio"]["id"] == str(portfolio_b.id)
+        assert data["portfolios"][0]["analytics"]["total_value"] == 20000.0
+        assert data["portfolios"][1]["analytics"]["total_value"] == 25000.0
+
+        assert data["diff"]["total_value"] == {"a": 20000.0, "b": 25000.0, "delta": 5000.0}
+        assert data["diff"]["health"]["holding_count"] == {"a": 10, "b": 14, "delta": 4}
+        assert data["diff"]["sector_allocation"]["Financials"] == {"a": 1.0, "b": 0.0, "delta": -1.0}
+        assert data["diff"]["sector_allocation"]["IT"] == {"a": 0.0, "b": 1.0, "delta": 1.0}
+
+    def test_rejects_comparing_a_portfolio_to_itself(self, client):
+        user_id, _ = _register_and_login(client, "compare-self@example.com", "compareself")
+        portfolio = _make_portfolio(user_id, is_public=True)
+
+        resp = client.get(f"/api/v1/portfolios/compare?ids={portfolio.id},{portfolio.id}")
+        assert resp.status_code == 400
+        assert resp.get_json()["error"]["code"] == "CANNOT_COMPARE_SAME_PORTFOLIO"
+
+    def test_private_portfolio_on_either_side_returns_404(self, client):
+        owner_id, _ = _register_and_login(client, "compare-priv-owner@example.com", "compareprivowner")
+        other_id, _ = _register_and_login(client, "compare-pub@example.com", "comparepub")
+        private_portfolio = _make_portfolio(owner_id, is_public=False)
+        public_portfolio = _make_portfolio(other_id, is_public=True)
+
+        resp = client.get(
+            f"/api/v1/portfolios/compare?ids={private_portfolio.id},{public_portfolio.id}"
+        )
+        assert resp.status_code == 404
+        assert resp.get_json()["error"]["code"] == "PORTFOLIO_NOT_FOUND"
+
+    def test_missing_snapshots_are_honestly_empty_not_an_error(self, client):
+        user_a, _ = _register_and_login(client, "compare-empty-a@example.com", "compareemptya")
+        user_b, _ = _register_and_login(client, "compare-empty-b@example.com", "compareemptyb")
+        portfolio_a = _make_portfolio(user_a, is_public=True)
+        portfolio_b = _make_portfolio(user_b, is_public=True)
+
+        resp = client.get(f"/api/v1/portfolios/compare?ids={portfolio_a.id},{portfolio_b.id}")
+        assert resp.status_code == 200
+        data = resp.get_json()["data"]
+
+        assert data["portfolios"][0]["analytics"]["total_value"] is None
+        assert data["portfolios"][0]["analytics"]["health"] is None
+        assert data["diff"]["total_value"] == {"a": None, "b": None, "delta": None}
+        assert data["diff"]["health"]["holding_count"] == {"a": None, "b": None, "delta": None}
+        assert data["diff"]["sector_allocation"] == {}
+
+    def test_synced_side_vs_unsynced_side_sector_diff_is_unknown_not_zero(self, client):
+        # A portfolio with no snapshot at all must not read as "confirmed 0%
+        # in every sector the other side holds" — that would fabricate a
+        # data point that doesn't exist (see analytics_service's
+        # compute_allocation_diff None-side handling).
+        synced_user, _ = _register_and_login(client, "compare-synced@example.com", "comparesynced")
+        unsynced_user, _ = _register_and_login(client, "compare-unsynced@example.com", "compareunsynced")
+        synced_portfolio = _make_portfolio(synced_user, is_public=True)
+        unsynced_portfolio = _make_portfolio(unsynced_user, is_public=True)
+        db.session.add(self._snapshot(synced_portfolio.id, 20000, {"Financials": 1.0}, 10, 0.15))
+        db.session.commit()
+
+        resp = client.get(
+            f"/api/v1/portfolios/compare?ids={synced_portfolio.id},{unsynced_portfolio.id}"
+        )
+        assert resp.status_code == 200
+        data = resp.get_json()["data"]
+
+        assert data["diff"]["sector_allocation"]["Financials"] == {
+            "a": 1.0,
+            "b": None,
+            "delta": None,
+        }
+
+    def test_missing_ids_param_returns_400(self, client):
+        resp = client.get("/api/v1/portfolios/compare")
+        assert resp.status_code == 400
+        assert resp.get_json()["error"]["code"] == "VALIDATION_ERROR"
+
+    def test_only_one_id_returns_400(self, client):
+        resp = client.get(f"/api/v1/portfolios/compare?ids={uuid.uuid4()}")
+        assert resp.status_code == 400
+        assert resp.get_json()["error"]["code"] == "VALIDATION_ERROR"
+
+    def test_three_ids_returns_400(self, client):
+        ids = ",".join(str(uuid.uuid4()) for _ in range(3))
+        resp = client.get(f"/api/v1/portfolios/compare?ids={ids}")
+        assert resp.status_code == 400
+        assert resp.get_json()["error"]["code"] == "VALIDATION_ERROR"
+
+    def test_non_uuid_token_returns_400(self, client):
+        resp = client.get(f"/api/v1/portfolios/compare?ids=not-a-uuid,{uuid.uuid4()}")
+        assert resp.status_code == 400
+        assert resp.get_json()["error"]["code"] == "VALIDATION_ERROR"
+
+    def test_compare_route_not_swallowed_by_uuid_route(self, client):
+        # A literal "/compare" segment must never be matched by
+        # <uuid:portfolio_id> (which would 404/error as an invalid UUID) —
+        # confirms Werkzeug resolves the static route first regardless of
+        # registration order.
+        user_a, _ = _register_and_login(client, "compare-route-a@example.com", "comparerouteA")
+        user_b, _ = _register_and_login(client, "compare-route-b@example.com", "comparerouteB")
+        portfolio_a = _make_portfolio(user_a, is_public=True)
+        portfolio_b = _make_portfolio(user_b, is_public=True)
+
+        resp = client.get(f"/api/v1/portfolios/compare?ids={portfolio_a.id},{portfolio_b.id}")
+        assert resp.status_code == 200
+        assert "portfolios" in resp.get_json()["data"]

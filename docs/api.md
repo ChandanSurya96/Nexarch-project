@@ -96,6 +96,7 @@ GET    /api/v1/portfolios/:id/analytics           # allocation, sector split, he
 GET    /api/v1/portfolios/:id/activity            # descriptive diffs between consecutive syncs (ADR-015, Milestone 3)
 GET    /api/v1/portfolios/:id/profile             # detail + holdings + analytics + activity combined
 GET    /api/v1/portfolios/:id/history             # raw snapshot history over time (Milestone 5)
+GET    /api/v1/portfolios/compare?ids=<uuid>,<uuid> # side-by-side comparison of two portfolios + diff (Milestone 6)
 PATCH  /api/v1/portfolios/:id                     # e.g. toggle is_public
 ```
 
@@ -239,6 +240,41 @@ GET /api/v1/portfolios/9f2c.../history
 Added Milestone 5 — documented since Phase 0 but not built until now. Raw snapshot-level data, oldest to newest, distinct from `.../activity`'s descriptive diffs over the same `portfolio_snapshots` table (this is the data; that's the narration). `volatility` is `null` for any snapshot recorded before ADR-024 shipped, or wherever it couldn't be honestly computed — same convention as everywhere else. Empty list until a portfolio has at least one snapshot.
 
 `snapshot_date` isn't unique — more than one sync can land on the same calendar date, and each produces its own entry here (see ADR-025). Ordering (both this list and which snapshot `.../analytics` treats as current) is by `snapshot_date` and then by an internal creation-order tiebreaker, so entries sharing a date still appear in the order they actually happened, not arbitrarily.
+
+## Example: Portfolio Comparison Response
+
+```json
+GET /api/v1/portfolios/compare?ids=9f2c...,3af1...
+
+{
+  "data": {
+    "portfolios": [
+      { "portfolio": { "id": "9f2c...", "display_name": "...", ... }, "analytics": { "total_value": 850000, "sector_allocation": {"Financials": 0.55, "IT": 0.25, "Consumer": 0.2}, "health": {"diversification_score": 0.6, "sector_concentration_hhi": 0.4, "portfolio_age_days": 400, "holding_count": 8, "volatility": 0.16}, "strategy_overview": "...", "as_of": "2026-07-25" } },
+      { "portfolio": { "id": "3af1...", "display_name": "...", ... }, "analytics": { "total_value": 1250000, "sector_allocation": {"IT": 0.6, "Pharma": 0.4}, "health": {"diversification_score": 0.48, "sector_concentration_hhi": 0.52, "portfolio_age_days": 400, "holding_count": 5, "volatility": 0.27}, "strategy_overview": "...", "as_of": "2026-07-25" } }
+    ],
+    "diff": {
+      "total_value": { "a": 850000, "b": 1250000, "delta": 400000 },
+      "sector_allocation": {
+        "Financials": { "a": 0.55, "b": 0.0, "delta": -0.55 },
+        "IT": { "a": 0.25, "b": 0.6, "delta": 0.35 },
+        "Consumer": { "a": 0.2, "b": 0.0, "delta": -0.2 },
+        "Pharma": { "a": 0.0, "b": 0.4, "delta": 0.4 }
+      },
+      "health": {
+        "diversification_score": { "a": 0.6, "b": 0.48, "delta": -0.12 },
+        "sector_concentration_hhi": { "a": 0.4, "b": 0.52, "delta": 0.12 },
+        "portfolio_age_days": { "a": 400, "b": 400, "delta": 0 },
+        "holding_count": { "a": 8, "b": 5, "delta": -3 },
+        "volatility": { "a": 0.16, "b": 0.27, "delta": 0.11 }
+      }
+    }
+  },
+  "meta": {},
+  "error": null
+}
+```
+
+Added Milestone 6 (ADR-026). `portfolios[0]` corresponds to the first id in `ids`, `portfolios[1]` to the second; every `delta` in `diff` is `b - a` (second id's value minus the first's) — the sign always points the same direction the ids were supplied in, not toward whichever side is "better" (there's no such ranking here, per ADR-007). `delta` is `null` wherever either side's value couldn't be honestly computed — no snapshot yet, or (for `sector_allocation`) one side has no snapshot at all — same convention as `volatility` elsewhere in this API; a sector missing from one side's *real* snapshot is a genuine `0.0`, not `null`. Comparing a portfolio to itself is rejected (`400 CANNOT_COMPARE_SAME_PORTFOLIO`); visibility follows the same rules as every other portfolio endpoint (`404 PORTFOLIO_NOT_FOUND` for a nonexistent or private-to-you portfolio).
 
 ## Rate Limiting
 

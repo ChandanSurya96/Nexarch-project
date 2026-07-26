@@ -21,6 +21,11 @@ compute_portfolio_volatility below. `None` wherever there isn't enough
 price history to compute it honestly (no broker connection with historical
 data, e.g. Public Investor Library portfolios; or too few data points) —
 never a fabricated or interpolated number.
+
+compute_scalar_diff/compute_allocation_diff/compute_health_diff (Milestone
+6, Portfolio Comparison) are the exception to every other function in this
+module: they diff two already-computed domain dicts/values rather than
+taking raw ORM input for a single portfolio.
 """
 
 from __future__ import annotations
@@ -202,4 +207,64 @@ def compute_health_metrics(
             if closes_by_holding_id
             else None
         ),
+    }
+
+
+_HEALTH_DIFF_FIELDS = (
+    "diversification_score",
+    "sector_concentration_hhi",
+    "portfolio_age_days",
+    "holding_count",
+    "volatility",
+)
+
+
+def compute_scalar_diff(a: float | None, b: float | None) -> dict:
+    """{"a", "b", "delta"} for a single numeric comparison, `b - a`.
+
+    `delta` is `None` if either side is `None` — diffing against missing
+    data would produce a number that looks precise without being one, the
+    same convention ADR-024 already established for volatility.
+    """
+    delta = round(b - a, 6) if a is not None and b is not None else None
+    return {"a": a, "b": b, "delta": delta}
+
+
+def compute_allocation_diff(
+    allocation_a: dict[str, float] | None, allocation_b: dict[str, float] | None
+) -> dict[str, dict]:
+    """Per-sector {"a", "b", "delta"} across the union of both portfolios'
+    sectors. A sector absent from one side's *known* allocation is an
+    honest `0.0` — a real computed fact, not missing data (unlike
+    volatility's nullability).
+
+    A whole side passed as `None` (no snapshot at all for that portfolio,
+    as opposed to a snapshot that simply holds 0% of some sector) is
+    different: every sector gets `None` for that side, not a fabricated
+    0.0 — otherwise an unsynced portfolio would misleadingly read as
+    "confirmed to hold nothing in every sector" rather than "unknown."
+    """
+    sectors = sorted(set(allocation_a or {}) | set(allocation_b or {}))
+    return {
+        sector: compute_scalar_diff(
+            allocation_a.get(sector, 0.0) if allocation_a is not None else None,
+            allocation_b.get(sector, 0.0) if allocation_b is not None else None,
+        )
+        for sector in sectors
+    }
+
+
+def compute_health_diff(health_a: dict | None, health_b: dict | None) -> dict:
+    """Per-field {"a", "b", "delta"} across _HEALTH_DIFF_FIELDS.
+
+    Safe against a whole-side `None` (no snapshot yet for that portfolio)
+    and against a missing/None individual field (e.g. a pre-ADR-024
+    snapshot with no "volatility" key at all) — both produce a `None` a/b/
+    delta for that field rather than raising or fabricating a zero.
+    """
+    health_a = health_a or {}
+    health_b = health_b or {}
+    return {
+        field: compute_scalar_diff(health_a.get(field), health_b.get(field))
+        for field in _HEALTH_DIFF_FIELDS
     }
