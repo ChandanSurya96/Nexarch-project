@@ -20,12 +20,21 @@ from app.models.broker_connection import BrokerConnection
 from app.models.holding import Holding
 from app.models.portfolio import Portfolio
 from app.models.portfolio_snapshot import PortfolioSnapshot
+from app.models.strategy_category import StrategyCategory
 from app.models.user import User
 from app.services.encryption_service import encrypt_token
 from app.services.sync_service import run_sync
 
 # 25 varying closes — enough to clear compute_volatility's minimum data-point floor.
 _VARYING_CLOSES = [100.0, 102.0, 98.0, 101.0, 97.0] * 5
+
+# 64 flat closes — zero volatility (well under the 15% Low-risk threshold)
+# and zero momentum (well under the 10% Momentum threshold): isolates Low-risk.
+_FLAT_CLOSES_64 = [100.0] * 64
+
+# 64 closes trending steadily upward ~31.5% overall — clears the 10%
+# Momentum threshold.
+_TRENDING_CLOSES_64 = [100.0 + i * 0.5 for i in range(64)]
 
 
 class _FakeAdapter:
@@ -161,3 +170,85 @@ class TestRunSync:
         # is what tells them apart chronologically.
         assert snapshots[0].snapshot_date == snapshots[1].snapshot_date
         assert snapshots[0].created_at != snapshots[1].created_at
+
+
+class TestStrategyTagging:
+    """Milestone 7, ADR-028 — strategy tags recomputed alongside health
+    metrics every sync."""
+
+    def _tag_slugs(self, portfolio_id) -> set[str]:
+        from app.models.strategy_category import PortfolioStrategyTag
+
+        tags = PortfolioStrategyTag.query.filter_by(portfolio_id=portfolio_id).all()
+        return {tag.strategy_category.slug for tag in tags}
+
+    def test_ensures_strategy_category_rows_exist_regardless_of_prior_state(self, monkeypatch):
+        # Doesn't assume a pristine DB (other test modules may have already
+        # committed these rows within the same test session — see
+        # test_discovery.py's TestStrategyCategories note) — just confirms
+        # run_sync never fails for lack of them, and all 8 exist afterward.
+        connection = _make_connection("sync-no-categories-yet@example.com")
+        monkeypatch.setattr(
+            "app.services.sync_service.get_adapter", lambda name: _FakeAdapter()
+        )
+
+        run_sync(str(connection.id))  # must not raise
+
+        assert StrategyCategory.query.count() == 8
+
+    def test_creates_low_risk_tag_when_volatility_is_low(self, monkeypatch):
+        connection = _make_connection("sync-low-risk@example.com")
+        adapter = _FakeAdapter(
+            historical_prices_by_isin={
+                "INE002A01018": _FLAT_CLOSES_64,
+                "INE467B01029": _FLAT_CLOSES_64,
+            }
+        )
+        monkeypatch.setattr("app.services.sync_service.get_adapter", lambda name: adapter)
+
+        run_sync(str(connection.id))
+
+        portfolio = Portfolio.query.filter_by(user_id=connection.user_id).first()
+        assert "low-risk" in self._tag_slugs(portfolio.id)
+
+    def test_creates_momentum_tag_when_trend_is_strong(self, monkeypatch):
+        connection = _make_connection("sync-momentum@example.com")
+        adapter = _FakeAdapter(
+            historical_prices_by_isin={
+                "INE002A01018": _TRENDING_CLOSES_64,
+                "INE467B01029": _TRENDING_CLOSES_64,
+            }
+        )
+        monkeypatch.setattr("app.services.sync_service.get_adapter", lambda name: adapter)
+
+        run_sync(str(connection.id))
+
+        portfolio = Portfolio.query.filter_by(user_id=connection.user_id).first()
+        assert "momentum" in self._tag_slugs(portfolio.id)
+
+    def test_second_sync_replaces_tags_rather_than_accumulating(self, monkeypatch):
+        connection = _make_connection("sync-tag-replace@example.com")
+        low_risk_adapter = _FakeAdapter(
+            historical_prices_by_isin={
+                "INE002A01018": _FLAT_CLOSES_64,
+                "INE467B01029": _FLAT_CLOSES_64,
+            }
+        )
+        monkeypatch.setattr(
+            "app.services.sync_service.get_adapter", lambda name: low_risk_adapter
+        )
+        run_sync(str(connection.id))
+
+        portfolio = Portfolio.query.filter_by(user_id=connection.user_id).first()
+        assert "low-risk" in self._tag_slugs(portfolio.id)
+
+        # Re-sync with no price history at all -> volatility/momentum both
+        # None -> no tags should match anymore, and the old "low-risk" row
+        # must be gone, not left behind alongside nothing new.
+        no_price_adapter = _FakeAdapter()
+        monkeypatch.setattr(
+            "app.services.sync_service.get_adapter", lambda name: no_price_adapter
+        )
+        run_sync(str(connection.id))
+
+        assert self._tag_slugs(portfolio.id) == set()

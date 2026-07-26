@@ -22,6 +22,15 @@ price history to compute it honestly (no broker connection with historical
 data, e.g. Public Investor Library portfolios; or too few data points) —
 never a fabricated or interpolated number.
 
+Momentum (Milestone 7, ADR-028): trailing ~90-calendar-day value-weighted
+return, reusing the exact same per-holding closes series already fetched
+for volatility — see compute_momentum_return and compute_portfolio_momentum
+below. Persisted in health_metrics at sync time (not recomputed on read):
+the closes series itself is never stored anywhere, so re-deriving momentum
+at read time would mean re-fetching from the broker on every analytics
+page load. Feeds app/services/strategy_categorization_service.py's
+Momentum rule.
+
 compute_scalar_diff/compute_allocation_diff/compute_health_diff (Milestone
 6, Portfolio Comparison) are the exception to every other function in this
 module: they diff two already-computed domain dicts/values rather than
@@ -181,6 +190,57 @@ def compute_portfolio_volatility(
     return round(weighted_sum / weighted_total, 4)
 
 
+# Trailing window for the momentum calculation (ADR-028) — ~90 calendar days,
+# translated to the same trading-day index math compute_volatility already
+# uses (the closes list has no dates attached, only ordered floats).
+_MOMENTUM_LOOKBACK_TRADING_DAYS = 63
+_MIN_PRICE_POINTS_FOR_MOMENTUM = _MOMENTUM_LOOKBACK_TRADING_DAYS + 1
+
+
+def compute_momentum_return(closes: list[float]) -> float | None:
+    """Trailing return over the last _MOMENTUM_LOOKBACK_TRADING_DAYS closes.
+
+    None if there's too little history to look back that far (ADR-028) —
+    same honest-absence convention as compute_volatility.
+    """
+    if len(closes) < _MIN_PRICE_POINTS_FOR_MOMENTUM:
+        return None
+
+    start = closes[-_MIN_PRICE_POINTS_FOR_MOMENTUM]
+    if start <= 0:
+        return None
+    return round((closes[-1] - start) / start, 4)
+
+
+def compute_portfolio_momentum(
+    holdings: list[Holding], closes_by_holding_id: dict[uuid.UUID, list[float]]
+) -> float | None:
+    """Value-weighted portfolio momentum — same renormalization shape as
+    compute_portfolio_volatility: holdings with no usable price history are
+    excluded, not zero-filled, so missing data for one holding doesn't
+    silently drag the whole figure down."""
+    total = sum(_holding_value(h) for h in holdings)
+    if total <= 0:
+        return None
+
+    weighted_sum = 0.0
+    weighted_total = 0.0
+    for holding in holdings:
+        closes = closes_by_holding_id.get(holding.id)
+        if not closes:
+            continue
+        momentum = compute_momentum_return(closes)
+        if momentum is None:
+            continue
+        weight = _holding_value(holding) / total
+        weighted_sum += momentum * weight
+        weighted_total += weight
+
+    if weighted_total <= 0:
+        return None
+    return round(weighted_sum / weighted_total, 4)
+
+
 def compute_health_metrics(
     holdings: list[Holding],
     snapshots: list[PortfolioSnapshot],
@@ -204,6 +264,11 @@ def compute_health_metrics(
         "holding_count": len(holdings),
         "volatility": (
             compute_portfolio_volatility(holdings, closes_by_holding_id)
+            if closes_by_holding_id
+            else None
+        ),
+        "momentum": (
+            compute_portfolio_momentum(holdings, closes_by_holding_id)
             if closes_by_holding_id
             else None
         ),

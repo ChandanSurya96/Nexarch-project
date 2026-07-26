@@ -18,7 +18,9 @@ from app.services.analytics_service import (
     compute_health_diff,
     compute_health_metrics,
     compute_hhi,
+    compute_momentum_return,
     compute_portfolio_age_days,
+    compute_portfolio_momentum,
     compute_portfolio_volatility,
     compute_scalar_diff,
     compute_sector_allocation,
@@ -145,8 +147,15 @@ class TestHealthMetrics:
             "portfolio_age_days",
             "holding_count",
             "volatility",
+            "momentum",
         }
         assert health["holding_count"] == 1
+
+    def test_momentum_is_none_without_price_data(self):
+        # Same honest-absence convention as volatility (ADR-028).
+        holdings = [_holding("Financials", 10, 100)]
+        health = compute_health_metrics(holdings, [])
+        assert health["momentum"] is None
 
 
 class TestComputeVolatility:
@@ -209,6 +218,70 @@ class TestComputePortfolioVolatility:
         )
         b_volatility = compute_volatility(varying_closes)
         assert result == round(b_volatility / 2, 4)
+
+
+class TestMomentum:
+    def test_too_few_points_returns_none(self):
+        closes = [100.0 + i for i in range(30)]  # fewer than the 64-point floor
+        assert compute_momentum_return(closes) is None
+
+    def test_flat_price_series_has_zero_momentum(self):
+        closes = [100.0] * 64
+        assert compute_momentum_return(closes) == 0.0
+
+    def test_positive_trend(self):
+        # 63 trading days back the price was 100, now it's 110 -> +10%.
+        closes = [100.0] * 63 + [110.0]
+        assert compute_momentum_return(closes) == 0.1
+
+    def test_negative_trend(self):
+        closes = [100.0] * 63 + [90.0]
+        assert compute_momentum_return(closes) == -0.1
+
+    def test_only_uses_the_trailing_window(self):
+        # Extra history further back than the lookback window shouldn't
+        # change the result — only the last 64 points matter.
+        closes = [50.0] * 100 + [100.0] * 63 + [110.0]
+        assert compute_momentum_return(closes) == 0.1
+
+
+class TestComputePortfolioMomentum:
+    def _priced_holding(self, quantity: float, avg_cost_price: float) -> Holding:
+        return Holding(
+            id=uuid.uuid4(),
+            symbol="TEST",
+            quantity=quantity,
+            avg_cost_price=avg_cost_price,
+            as_of_date=date(2026, 7, 25),
+        )
+
+    def test_none_when_no_holding_has_price_data(self):
+        holdings = [self._priced_holding(10, 100)]
+        assert compute_portfolio_momentum(holdings, {}) is None
+
+    def test_excludes_holdings_without_price_data_rather_than_zero_filling(self):
+        priced = self._priced_holding(10, 100)
+        unpriced = self._priced_holding(10, 100)
+        trending_closes = [100.0] * 63 + [110.0]
+
+        result = compute_portfolio_momentum([priced, unpriced], {priced.id: trending_closes})
+        solo_momentum = compute_momentum_return(trending_closes)
+
+        assert result == solo_momentum
+
+    def test_value_weighted_average(self):
+        flat_closes = [100.0] * 64
+        trending_closes = [100.0] * 63 + [120.0]
+
+        holding_a = self._priced_holding(quantity=10, avg_cost_price=100)  # value 1000
+        holding_b = self._priced_holding(quantity=10, avg_cost_price=100)  # value 1000
+
+        result = compute_portfolio_momentum(
+            [holding_a, holding_b],
+            {holding_a.id: flat_closes, holding_b.id: trending_closes},
+        )
+        b_momentum = compute_momentum_return(trending_closes)
+        assert result == round(b_momentum / 2, 4)
 
 
 class TestScalarDiff:

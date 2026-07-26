@@ -11,6 +11,7 @@ from app.extensions import db
 from app.models.portfolio import Portfolio
 from app.models.public_investor import PublicInvestor
 from app.models.strategy_category import PortfolioStrategyTag, StrategyCategory
+from app.models.user import User
 from app.services.discovery_service import invalidate_discovery_cache
 
 REGISTER_URL = "/api/v1/auth/register"
@@ -62,6 +63,33 @@ def _make_public_investor(
     return portfolio
 
 
+def _make_verified_portfolio(email: str, strategy_slugs: list[str] | None = None) -> Portfolio:
+    """Milestone 7: verified portfolios can now carry strategy tags too
+    (auto-assigned by sync_service in production; attached directly here to
+    test the discovery filter query itself, not the full sync pipeline —
+    that's covered in test_sync_service.py)."""
+    user = User(email=email, username=email.split("@")[0], password_hash="x")
+    db.session.add(user)
+    db.session.flush()
+
+    portfolio = Portfolio(user_id=user.id, portfolio_type="verified", is_public=True)
+    db.session.add(portfolio)
+    db.session.flush()
+
+    for slug_ in strategy_slugs or []:
+        category = StrategyCategory.query.filter_by(slug=slug_).first()
+        if category is None:
+            category = StrategyCategory(name=slug_.title(), slug=slug_, description="test")
+            db.session.add(category)
+            db.session.flush()
+        db.session.add(
+            PortfolioStrategyTag(portfolio_id=portfolio.id, strategy_category_id=category.id)
+        )
+
+    db.session.commit()
+    return portfolio
+
+
 class TestListInvestors:
     def test_only_public_portfolios_returned(self, client):
         _make_public_investor("Investor A", "investor-a")
@@ -89,6 +117,18 @@ class TestListInvestors:
         assert resp.status_code == 200
         names = [r["display_name"] for r in resp.get_json()["data"]]
         assert names == ["Value Investor"]
+
+    def test_verified_portfolio_with_auto_tag_matches_filter(self, client):
+        # Milestone 7 — before this, no verified portfolio could ever match
+        # a strategy filter (only manually-curated Public Investor Library
+        # entries had tags).
+        _make_verified_portfolio("m7-verified-lowrisk@example.com", ["low-risk"])
+        _make_public_investor("Growth Investor M7", "growth-investor-m7", ["growth"])
+
+        resp = client.get(f"{INVESTORS_URL}?strategy=low-risk")
+        assert resp.status_code == 200
+        types = [r["portfolio_type"] for r in resp.get_json()["data"]]
+        assert "verified" in types
 
     def test_sort_alphabetical(self, client):
         _make_public_investor("Zebra Capital", "zebra-capital")

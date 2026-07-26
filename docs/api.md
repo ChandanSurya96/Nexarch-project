@@ -175,17 +175,25 @@ GET /api/v1/portfolios/9f2c.../analytics
       "sector_concentration_hhi": 0.19,
       "portfolio_age_days": 612,
       "holding_count": 14,
-      "volatility": 0.182
+      "volatility": 0.132,
+      "momentum": 0.086
     },
     "strategy_overview": "Currently weighted toward Financials (31% of synced holdings), with exposure spread across other sectors as well, predominantly in large-cap holdings.",
-    "as_of": "2026-07-13"
+    "as_of": "2026-07-13",
+    "strategy_categorization": [
+      {
+        "slug": "low-risk",
+        "name": "Low-risk",
+        "explanation": "Annualized volatility of 13.2% is at or below the 15% threshold for lower-than-typical broad-market equity risk."
+      }
+    ]
   },
   "meta": {},
   "error": null
 }
 ```
 
-`diversification_score` and `sector_concentration_hhi` are computed directly from current holdings composition (see [database.md](./database.md), [product-requirements.md](./product-requirements.md)). `volatility` (added Milestone 5, ADR-024 resolving ADR-008) is annualized, value-weighted across holdings, computed from the broker's own historical price data — `null` wherever there isn't a broker connection to fetch price history from (e.g. Public Investor Library portfolios) or too few data points to compute it honestly. `strategy_overview` (added Milestone 3) is the rules-based Investor Strategy Overview from [product-requirements.md](./product-requirements.md) — descriptive-only wording, never a recommendation (see [security.md](./security.md)); `null` when there's not yet enough synced data to describe.
+`diversification_score` and `sector_concentration_hhi` are computed directly from current holdings composition (see [database.md](./database.md), [product-requirements.md](./product-requirements.md)). `volatility` (added Milestone 5, ADR-024 resolving ADR-008) is annualized, value-weighted across holdings, computed from the broker's own historical price data — `null` wherever there isn't a broker connection to fetch price history from (e.g. Public Investor Library portfolios) or too few data points to compute it honestly. `momentum` (added Milestone 7, ADR-028) is a trailing ~90-day value-weighted return, computed from the same historical price data as volatility — same nullability rules. `strategy_overview` (added Milestone 3) is the rules-based Investor Strategy Overview from [product-requirements.md](./product-requirements.md) — descriptive-only wording, never a recommendation (see [security.md](./security.md)); `null` when there's not yet enough synced data to describe. `strategy_categorization` (added Milestone 7, ADR-028) lists which of the 8 fixed strategy categories currently apply to this portfolio, each with a plain-language explanation citing the observed number against its threshold — computed fresh from the current snapshot's `health` and holdings, not stored; always `[]` for Public Investor Library portfolios (whose tags are manually curated, not rule-derived) and for portfolios with no snapshot yet. Only 3 of the platform's 8 fixed categories can appear here (Small-cap Specialist, Low-risk, Momentum) — the rest are deferred pending real data sources, see ADR-028.
 
 ## Example: Portfolio Activity Response
 

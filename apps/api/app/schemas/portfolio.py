@@ -64,6 +64,10 @@ class PortfolioAnalyticsSchema(Schema):
     health = fields.Dict(allow_none=True)
     strategy_overview = fields.String(allow_none=True)
     as_of = fields.String(allow_none=True)
+    # Rules-based auto-categorization (Milestone 7, ADR-028) — {"slug",
+    # "name", "explanation"} per matched category. Always [] for Public
+    # Investor Library portfolios (manually curated, not rule-derived).
+    strategy_categorization = fields.List(fields.Dict(keys=fields.String(), values=fields.Raw()))
 
 
 class ActivityEntrySchema(Schema):

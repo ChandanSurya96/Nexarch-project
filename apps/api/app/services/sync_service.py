@@ -1,8 +1,11 @@
-"""Sync orchestration — fetch, normalize, upsert, recompute, log.
+"""Sync orchestration — fetch, normalize, upsert, recompute, categorize, log.
 
 See docs/architecture.md "Data Flow: Portfolio Sync". Called by the Celery
 task in app/tasks/sync.py — kept as a plain function here (no Celery/Flask
 import beyond db) so it's unit-testable without a running worker.
+
+Strategy-category tags (Milestone 7) are recomputed here alongside health
+metrics — see app/services/strategy_categorization_service.py.
 """
 
 from __future__ import annotations
@@ -22,6 +25,7 @@ from app.models.broker_connection import BrokerConnection
 from app.models.holding import Holding
 from app.models.portfolio import Portfolio
 from app.models.portfolio_snapshot import PortfolioSnapshot
+from app.models.strategy_category import PortfolioStrategyTag
 from app.services import audit_service
 from app.services.analytics_service import (
     compute_asset_allocation,
@@ -32,6 +36,7 @@ from app.services.analytics_service import (
 from app.services.discovery_service import invalidate_discovery_cache
 from app.services.encryption_service import decrypt_token
 from app.services.normalization_service import normalize_holdings
+from app.services.strategy_categorization_service import categorize, ensure_strategy_category_rows
 
 # Trailing window for the volatility calculation (ADR-024) — about a year of
 # trading history, a conventional lookback for an annualized figure.
@@ -143,6 +148,20 @@ def run_sync(broker_connection_id: str) -> None:
         health_metrics=health_metrics,
     )
     db.session.add(snapshot)
+
+    # Strategy tags recomputed fresh every sync (Milestone 7, ADR-028) — same
+    # delete+reinsert idempotent pattern already used for Holding rows above,
+    # not an accumulating history. Public Investor Library portfolios never
+    # go through run_sync, so their manually-curated tags are untouched.
+    categories_by_slug = ensure_strategy_category_rows()
+    PortfolioStrategyTag.query.filter_by(portfolio_id=portfolio.id).delete()
+    for match in categorize(holdings, health_metrics):
+        db.session.add(
+            PortfolioStrategyTag(
+                portfolio_id=portfolio.id,
+                strategy_category_id=categories_by_slug[match["slug"]].id,
+            )
+        )
 
     connection.last_synced_at = datetime.now(UTC)
     connection.status = "active"

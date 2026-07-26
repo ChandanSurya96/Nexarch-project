@@ -85,6 +85,7 @@ sequenceDiagram
     W->>W: Normalize to Nexarch Holding schema
     W->>DB: Upsert holdings + snapshot
     W->>DB: Recompute portfolio health metrics
+    W->>DB: Recompute strategy category tags (Milestone 7)
     Note over API,DB: Subsequent syncs run on a schedule<br/>(daily, since long-term portfolios don't need intraday refresh)
 ```
 

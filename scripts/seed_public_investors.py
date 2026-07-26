@@ -43,6 +43,7 @@ sys.path.insert(0, _API_DIR)
 os.chdir(_API_DIR)
 
 from app import create_app  # noqa: E402
+from app.data.strategy_categories import STRATEGY_CATEGORIES  # noqa: E402
 from app.extensions import db  # noqa: E402
 from app.models.holding import Holding  # noqa: E402
 from app.models.portfolio import Portfolio  # noqa: E402
@@ -59,22 +60,6 @@ from app.models.strategy_category import PortfolioStrategyTag, StrategyCategory 
 # analytics to be honestly absent (GET .../analytics already returns null
 # health when there's no snapshot) than quietly incorrect. Revisit once
 # there's a verified value source for these disclosures, not before.
-
-# ── Strategy categories — the filter list from docs/product-requirements.md ──
-STRATEGY_CATEGORIES = [
-    {"name": "Long-term", "slug": "long-term", "description": "Holds positions for years, not quarters."},
-    {"name": "Growth", "slug": "growth", "description": "Favors companies expanding revenue/earnings quickly."},
-    {"name": "Value", "slug": "value", "description": "Favors companies priced below intrinsic worth."},
-    {"name": "Dividend", "slug": "dividend", "description": "Favors steady dividend-paying businesses."},
-    {"name": "Momentum", "slug": "momentum", "description": "Favors stocks with strong recent price trends."},
-    {"name": "ETF", "slug": "etf", "description": "Primarily invests via exchange-traded funds."},
-    {
-        "name": "Small-cap Specialist",
-        "slug": "small-cap-specialist",
-        "description": "Concentrates on small-cap companies.",
-    },
-    {"name": "Low-risk", "slug": "low-risk", "description": "Favors capital preservation over upside."},
-]
 
 # ── Public Investor Library seed data ────────────────────────────────────────
 # Every source_disclosure_url below was visited and read on 2026-07-25.

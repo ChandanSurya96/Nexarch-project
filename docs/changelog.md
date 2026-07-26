@@ -10,6 +10,23 @@ Nothing pending beyond what's logged below — this section stays as the running
 
 ---
 
+## [2026-07-26] — Milestone 7: Rules-Based Strategy Categorization (Phase 2)
+
+### Added
+- Rules-based auto-categorization for verified portfolios (ADR-028): `strategy_categorization_service.py` evaluates 3 of the platform's 8 fixed strategy categories against currently-synced data — Small-cap Specialist (market-cap allocation `> 50%`), Low-risk (volatility `<= 15%`), Momentum (trailing ~90-day return `>= 10%`) — and recomputes `PortfolioStrategyTag` rows on every sync (deleted and reinserted, never accumulated), the same idempotent pattern already used for `Holding` rows. `ensure_strategy_category_rows()` creates the 8 canonical rows at runtime if they don't exist yet, rather than relying on a migration or the Public Investor Library seed script having run.
+- `analytics_service.compute_momentum_return`/`compute_portfolio_momentum` — trailing value-weighted return, reusing the exact same per-holding historical-closes fetch already pulled for volatility (no new broker API calls). Persisted in `health_metrics` as `momentum`, alongside `volatility`.
+- `GET /portfolios/:id/analytics` gains `strategy_categorization`: a list of `{slug, name, explanation}` for each matched category, computed fresh at read time from the current snapshot — each explanation cites the actual observed number against its threshold, never a bare label or a synthesized confidence score (ADR-007). Always `[]` for Public Investor Library portfolios (manually curated, not rule-derived) and for portfolios with no snapshot yet.
+- Frontend: `PortfolioProfileView` gives each strategy-tag `Badge` a tooltip with its explanation (when one exists), and a conditional Momentum `StatCard` next to the existing Volatility one.
+- New "Feature: Strategy Categorization" section in `docs/product-requirements.md`.
+- 34 new backend tests (`TestMomentum`/`TestComputePortfolioMomentum` in `test_analytics_service.py`; new `test_strategy_categorization_service.py`; `TestStrategyTagging` in `test_sync_service.py`; new tests in `test_portfolios.py`/`test_discovery.py`), 4 new frontend tests.
+
+### Notes
+- Real limitation, stated plainly (ADR-028): Growth, Value, Dividend, ETF, and Long-term are **not** auto-assigned this milestone — no fundamentals/valuation/dividend data or instrument-type classification exists anywhere in this codebase, and Long-term has no validated stability threshold without real production sync history to calibrate against. All 8 categories remain in the taxonomy and filterable; only 3 can appear on a verified portfolio automatically.
+- This milestone is what makes a verified (broker-synced) portfolio able to match a Discovery Feed strategy filter for the first time — previously only the 5 seeded Public Investor Library entries ever had tags.
+- Manually verified: seeded/synced a verified portfolio designed to cross each of the 3 thresholds, confirmed tags + explanations on `GET .../analytics`, confirmed it appeared under `GET /discovery/investors?strategy=<slug>`, confirmed a second sync with different data replaced tags rather than accumulating them, and confirmed Public Investor Library entries were completely unaffected.
+
+---
+
 ## [2026-07-26] — Milestone 6: Portfolio Comparison (Phase 2)
 
 ### Added
