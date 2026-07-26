@@ -129,6 +129,8 @@ erDiagram
 
 **Why `strategy_categories` is a join table, not a single `strategy` column on `portfolios`:** a portfolio can plausibly be both "Value Investing" and "Long-Term Compounder" at once — see the strategy list in [product-requirements.md](./product-requirements.md). A single-value column would force a false choice.
 
+**Two write paths into `portfolio_strategy_tags` (Milestone 7, ADR-028):** verified portfolios' rows are system-written — deleted and reinserted on every sync (`sync_service.run_sync` via `strategy_categorization_service.categorize`), never accumulated. Public Investor Library rows stay human-curated via `scripts/seed_public_investors.py` and are never touched by the sync path (Public Investor Library portfolios have no `broker_connection_id` and never go through `run_sync` at all — the two paths can't collide by construction, not just by convention).
+
 **What's deliberately not in this schema yet:**
 - No `orders` or `trades` tables — those belong to Phase 5 (execution) and shouldn't exist until that phase is actually being built, to avoid unused schema surface area.
 - No `subscriptions` / billing tables — Phase 4 (Creator Economy).

@@ -250,6 +250,9 @@ with app.test_client() as c:
     # ADR-024 (resolving ADR-008): volatility is now a real, nullable field —
     # None here since the fake adapter returns no historical prices.
     check("volatility is honestly None", body["data"]["health"]["volatility"] is None)
+    # Milestone 7 (ADR-028): single large-cap holding, no price data -> no
+    # auto-categorization matches.
+    check("no strategy categorization matches", body["data"]["strategy_categorization"] == [])
 
     print("\n=== PUBLIC/PRIVATE TOGGLE ===")
     r = c.patch(

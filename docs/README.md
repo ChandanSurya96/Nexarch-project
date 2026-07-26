@@ -8,11 +8,11 @@
 
 Nexarch is India's portfolio identity and investor-discovery platform. Users connect a brokerage account (read-only) to generate a verified investing profile, and browse other investors by strategy, diversification, and consistency instead of by follower count. See [vision.md](./vision.md) for the full philosophy.
 
-## Current Status — Phase 2, Milestone 6 done
+## Current Status — Phase 2, Milestone 7 done
 
-- **Stage:** Phase 1 (Milestones 1–4c) is complete and tagged `phase-1-complete` — auth, broker connection/sync, portfolio analytics, Public Investor Library, discovery feed, follows, and the full frontend. Phase 2 is underway: Milestone 5 (Health Metrics) resolved ADR-008 by adding portfolio volatility (ADR-024, reusing Upstox's own historical-price API) and built the long-documented `GET /portfolios/:id/history` endpoint + chart. Milestone 6 (Portfolio Comparison) added `GET /portfolios/compare?ids=a,b` (ADR-026) — side-by-side analytics + diff for two portfolios, computed on read, with link-only entry points rather than a dedicated picker (ADR-027). See [changelog.md](./changelog.md) for what shipped in each.
+- **Stage:** Phase 1 (Milestones 1–4c) is complete and tagged `phase-1-complete` — auth, broker connection/sync, portfolio analytics, Public Investor Library, discovery feed, follows, and the full frontend. Phase 2 is underway: Milestone 5 (Health Metrics) resolved ADR-008 by adding portfolio volatility (ADR-024, reusing Upstox's own historical-price API) and built the long-documented `GET /portfolios/:id/history` endpoint + chart. Milestone 6 (Portfolio Comparison) added `GET /portfolios/compare?ids=a,b` (ADR-026) — side-by-side analytics + diff for two portfolios, computed on read, with link-only entry points rather than a dedicated picker (ADR-027). Milestone 7 (Strategy Categorization) added rules-based auto-tagging for verified portfolios (ADR-028) — only 3 of the platform's 8 fixed categories (Small-cap Specialist, Low-risk, Momentum) are honestly computable from data ingested so far; the rest are deliberately deferred, not guessed at. See [changelog.md](./changelog.md) for what shipped in each.
 - **Stack:** Next.js / TypeScript / Tailwind (frontend), Flask / SQLAlchemy / PostgreSQL (backend), Redis + Celery (background sync + discovery-feed cache), JWT auth.
-- **Next step:** per the agreed Phase 2 sequencing — Milestone 7 (Strategy Categorization), Milestone 8 (Additional Broker: Dhan) — see [roadmap.md](./roadmap.md) and [decisions.md](./decisions.md).
+- **Next step:** per the agreed Phase 2 sequencing — Milestone 8 (Additional Broker: Dhan) — see [roadmap.md](./roadmap.md) and [decisions.md](./decisions.md).
 
 Three findings from this round of research changed the plan materially enough that they're worth knowing before you read anything else:
 

@@ -3,9 +3,10 @@
 Keeps Flask routes thin (see app/routes/portfolios.py): each route makes one
 call here instead of orchestrating multiple services inline. This module
 fans out to analytics_service, activity_service, strategy_overview_service,
-and Portfolio.holdings — none of which import this module or each other, so
-each stays independently usable/testable (see docs/architecture.md's
-routes -> services -> models layering).
+strategy_categorization_service, and Portfolio.holdings — none of which
+import this module or each other, so each stays independently
+usable/testable (see docs/architecture.md's routes -> services -> models
+layering).
 """
 
 from __future__ import annotations
@@ -26,6 +27,7 @@ from app.services.portfolio_service import (
     get_snapshot_history,
     get_visible_portfolio,
 )
+from app.services.strategy_categorization_service import categorize
 from app.services.strategy_overview_service import generate_overview
 
 _portfolio_schema = PortfolioSchema()
@@ -50,6 +52,7 @@ def _build_analytics_view(portfolio_id: uuid.UUID, portfolio: Portfolio) -> dict
             "health": None,
             "strategy_overview": None,
             "as_of": None,
+            "strategy_categorization": [],
         }
 
     sector_allocation = snapshot.sector_allocation or {}
@@ -64,6 +67,7 @@ def _build_analytics_view(portfolio_id: uuid.UUID, portfolio: Portfolio) -> dict
         "health": snapshot.health_metrics,
         "strategy_overview": generate_overview(sector_allocation, hhi, portfolio.holdings),
         "as_of": snapshot.snapshot_date.isoformat(),
+        "strategy_categorization": categorize(portfolio.holdings, snapshot.health_metrics or {}),
     }
 
 

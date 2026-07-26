@@ -117,6 +117,7 @@ class TestGetAnalytics:
         assert data["total_value"] is None
         assert data["health"] is None
         assert data["sector_allocation"] == {}
+        assert data["strategy_categorization"] == []
 
     def test_with_snapshot_returns_health_metrics(self, client):
         user_id, _ = _register_and_login(client, "analytics-full@example.com", "analyticsfull")
@@ -149,6 +150,40 @@ class TestGetAnalytics:
         # here since this snapshot was hand-built without price data (ADR-024).
         assert "score" not in data["health"]
         assert data["health"]["volatility"] is None
+        # No price/holdings data crossing any threshold here -> no auto-tags.
+        assert data["strategy_categorization"] == []
+
+    def test_strategy_categorization_reflects_computed_health(self, client):
+        # Milestone 7 — categorize() runs off the same snapshot health_metrics,
+        # read-time, so a low-volatility snapshot surfaces the Low-risk match
+        # with its explanation, not just the raw tag list.
+        user_id, _ = _register_and_login(client, "analytics-categorized@example.com", "analyticscategorized")
+        portfolio = _make_portfolio(user_id, is_public=True)
+        snapshot = PortfolioSnapshot(
+            portfolio_id=portfolio.id,
+            snapshot_date=date(2026, 7, 25),
+            total_value=25000,
+            sector_allocation={"Energy": 1.0},
+            asset_allocation={"Equity": 1.0},
+            health_metrics={
+                "diversification_score": 0.0,
+                "sector_concentration_hhi": 1.0,
+                "portfolio_age_days": 0,
+                "holding_count": 1,
+                "volatility": 0.05,
+                "momentum": None,
+            },
+        )
+        db.session.add(snapshot)
+        db.session.commit()
+
+        resp = client.get(f"/api/v1/portfolios/{portfolio.id}/analytics")
+        assert resp.status_code == 200
+        data = resp.get_json()["data"]
+        slugs = {c["slug"] for c in data["strategy_categorization"]}
+        assert slugs == {"low-risk"}
+        low_risk_entry = next(c for c in data["strategy_categorization"] if c["slug"] == "low-risk")
+        assert "5.0%" in low_risk_entry["explanation"]
 
 
 class TestPatchPortfolio:

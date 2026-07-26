@@ -85,6 +85,17 @@
 - No composite "who wins" score or ranking is computed or displayed — each metric is shown and diffed independently, consistent with ADR-007's no-single-trust-score rule. A higher value on one metric (e.g. concentration/HHI) is not framed as "better" or "worse."
 - Milestone 6 ships contextual entry points only (e.g. "Compare with mine" from an investor's card or portfolio page) — not a standalone portfolio picker (ADR-027). Direct navigation without two portfolios selected shows a guided empty state, not an error.
 
+## Feature: Strategy Categorization
+
+**What it does:** automatically tags a verified portfolio with 0 or more of the fixed 8 strategy categories (see "Investor Discovery Feed" above), based on rules run against currently-synced holdings and health metrics, so real users can appear in Discovery Feed strategy filters — not just the manually-curated Public Investor Library.
+
+**Acceptance criteria:**
+- Only 3 of the 8 categories are auto-computed as of this milestone — Small-cap Specialist, Low-risk, Momentum — because only these are honestly derivable from data Nexarch currently ingests (market-cap allocation, volatility, and price trend, respectively). Growth, Value, Dividend, ETF, and Long-term are deliberately **not** auto-assigned; see ADR-028 for why each is deferred rather than guessed at.
+- Tags are recomputed fresh on every sync (deleted and reinserted), never accumulated — a portfolio that no longer meets a threshold loses that tag on its next sync, the same as every other derived field in this API.
+- Every auto-assigned tag comes with a plain-language explanation citing the actual observed number against its threshold (e.g. "56% of portfolio value is in small-cap holdings (threshold: 50%)") — never a bare label and never a synthesized confidence score (ADR-007: no composite score, only labeled, independently-understandable indicators).
+- All explanation copy stays strictly descriptive of what the data currently shows — never a recommendation or a promise (see [security.md](./security.md), "The Line Between Data and Advice").
+- Public Investor Library portfolios are entirely unaffected — their tags stay human-curated via `scripts/seed_public_investors.py`, since they never go through a sync.
+
 ## Non-Functional Requirements
 
 - Portfolio page load: target under 2s for a returning visitor (cached analytics), under 5s for a fresh sync-triggered load.
