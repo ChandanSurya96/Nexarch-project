@@ -7,6 +7,7 @@ Endpoints (all under /api/v1/portfolios — prefix registered in create_app):
     GET    /:id/activity    — descriptive snapshot-history diffs (ADR-015)
     GET    /:id/history     — raw snapshot history over time (Milestone 5)
     GET    /:id/profile     — detail + holdings + analytics + activity combined
+    GET    /compare         — side-by-side comparison of two portfolios + diff (Milestone 6)
     PATCH  /:id             — toggle is_public (owner only)
     POST   /:id/follow      — follow (no capital, no execution — see docs/product-requirements.md)
     DELETE /:id/follow      — unfollow
@@ -30,7 +31,7 @@ from flask_jwt_extended import get_jwt_identity, jwt_required
 from marshmallow import ValidationError
 
 from app.schemas.portfolio import PortfolioSchema, PortfolioUpdateSchema
-from app.services import portfolio_profile_service
+from app.services import portfolio_comparison_service, portfolio_profile_service
 from app.services.follow_service import follow, unfollow
 from app.services.portfolio_service import PortfolioAccessError, update_visibility
 from app.utils.responses import error, success
@@ -106,6 +107,30 @@ def get_portfolio_profile(portfolio_id: uuid.UUID):
         return success(
             portfolio_profile_service.get_complete_profile(portfolio_id, _current_user_id())
         )
+    except PortfolioAccessError as exc:
+        return error(exc.code, exc.message, exc.status)
+
+
+def _parse_compare_ids(raw: str) -> list[uuid.UUID]:
+    tokens = [token for token in raw.split(",") if token]
+    if len(tokens) != 2:
+        raise ValueError("`ids` must contain exactly two comma-separated portfolio ids.")
+    try:
+        return [uuid.UUID(token) for token in tokens]
+    except ValueError as exc:
+        raise ValueError("`ids` must contain two valid portfolio ids.") from exc
+
+
+@portfolios_bp.get("/compare")
+@jwt_required(optional=True)
+def compare_portfolios():
+    try:
+        ids = _parse_compare_ids(request.args.get("ids", ""))
+    except ValueError as exc:
+        return error("VALIDATION_ERROR", str(exc), 400)
+
+    try:
+        return success(portfolio_comparison_service.compare(ids, _current_user_id()))
     except PortfolioAccessError as exc:
         return error(exc.code, exc.message, exc.status)
 

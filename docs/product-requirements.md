@@ -73,6 +73,18 @@
 **Acceptance criteria:**
 - Following a portfolio never moves money or places any order — this is worth stating as an explicit acceptance criterion precisely because it's the single most common expectation a user might arrive with from other "social investing" products.
 
+## Feature: Portfolio Comparison
+
+**What it does:** shows two portfolios' analytics and health metrics side by side, with a computed diff, so a user can see how their own portfolio (or any two portfolios they can view) differ objectively.
+
+**Acceptance criteria:**
+- Given two portfolios the requester can view, when they're compared, then both portfolios' current holdings-derived analytics (total value, sector allocation, health metrics) are shown side by side, plus a per-field diff.
+- Given one or both portfolios have no synced snapshot yet, then the comparison renders those fields honestly empty (`null`/"not enough data"), never a fabricated zero or invented delta — the same convention as every other nullable field in this API (ADR-008/ADR-024). This applies at the per-sector level too: a sector present in one portfolio but entirely absent because the other side has no snapshot at all is "unknown," not "confirmed 0%."
+- Given the same portfolio id supplied twice, then the comparison is rejected with a clear error rather than silently diffing a portfolio against itself.
+- Visibility rules are unchanged: a private portfolio is exactly as invisible to a non-owner in a comparison as anywhere else in the API (same 404, per `get_visible_portfolio`) — comparison introduces no new access path.
+- No composite "who wins" score or ranking is computed or displayed — each metric is shown and diffed independently, consistent with ADR-007's no-single-trust-score rule. A higher value on one metric (e.g. concentration/HHI) is not framed as "better" or "worse."
+- Milestone 6 ships contextual entry points only (e.g. "Compare with mine" from an investor's card or portfolio page) — not a standalone portfolio picker (ADR-027). Direct navigation without two portfolios selected shows a guided empty state, not an error.
+
 ## Non-Functional Requirements
 
 - Portfolio page load: target under 2s for a returning visitor (cached analytics), under 5s for a fresh sync-triggered load.

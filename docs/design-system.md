@@ -74,3 +74,4 @@ Framer Motion, used for clarity, not decoration:
 - Consistent color mapping per sector across every chart on the platform (a sector should always render in the same color wherever it appears, so users build pattern recognition across profiles).
 - Consistent green-up/red-down for any performance figure, per the color table above.
 - Every chart ships with the accessible text-equivalent described above from day one, not retrofitted later.
+- A two-portfolio comparison's per-metric delta (Milestone 6) is shown neutrally — no green/red judgment coloring. Unlike a rising/falling value over time, "higher" isn't consistently good or bad across these metrics (a higher concentration/HHI is more concentrated, not "worse" in a way this product ranks — see ADR-007 in [decisions.md](./decisions.md)); the green-up/red-down convention above is reserved for genuinely directional performance figures, not for which side of a comparison happens to be numerically larger.
