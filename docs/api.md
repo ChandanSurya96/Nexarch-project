@@ -37,6 +37,26 @@ Errors use the same envelope with `data: null` and a populated `error`:
 
 Error `code` values are stable, machine-readable strings (`UPPER_SNAKE_CASE`) the frontend can switch on; `message` is for humans and may change wording without being a breaking change.
 
+### Error Codes — Auth & Request-Level Failures
+
+Every failure path returns the envelope above — including ones that never reach a route's own view function (a missing/expired/malformed token, an unmatched route, an unhandled exception) — via `app/error_handlers.py` (ADR-029 in [decisions.md](./decisions.md)):
+
+| Code | Status | When |
+|---|---|---|
+| `AUTHORIZATION_REQUIRED` | 401 | No `Authorization` header on a route that requires one |
+| `CSRF_TOKEN_MISSING` | 401 | Cookie-sourced token (only `POST /auth/refresh` in practice) with no/wrong `X-CSRF-TOKEN` header (ADR-031) |
+| `TOKEN_INVALID` | 422 | Malformed or undecodable token |
+| `ACCESS_TOKEN_EXPIRED` | 401 | Access token past its 15-minute expiry |
+| `REFRESH_TOKEN_EXPIRED` | 401 | Refresh token past its 30-day expiry |
+| `REFRESH_TOKEN_REUSED` | 401 | A refresh token was replayed outside the reuse-detection grace window — the whole session family is revoked (ADR-030) |
+| `REFRESH_SESSION_INVALID` | 401 | The refresh family was already killed (reuse detected, or logout) or naturally expired |
+| `FRESH_TOKEN_REQUIRED` | 401 | Route requires a "fresh" token (none currently do; registered for completeness) |
+| `TOKEN_REVOKED` | 401 | Token individually revoked (nothing currently does this — sessions are revoked by family, not by token — registered for completeness) |
+| `TOO_MANY_REQUESTS` | 429 | Rate limit exceeded — see Rate Limiting below |
+| `NOT_FOUND` | 404 | No route matches the request path |
+| `METHOD_NOT_ALLOWED` | 405 | Route exists but not for this HTTP method |
+| `INTERNAL_SERVER_ERROR` | 500 | Unhandled exception — logged server-side with full detail, never leaked to the client |
+
 ## Pagination
 
 Offset-based for MVP simplicity (cursor-based is a Phase 2+ upgrade if discovery-feed scale demands it):
@@ -53,6 +73,8 @@ GET /api/v1/discovery/investors?page=1&per_page=20
   }
 }
 ```
+
+`page`/`per_page` share one schema (`app/schemas/pagination.py`'s `PaginationQuerySchema`) across every paginated endpoint, so the bounds (`page >= 1`, `1 <= per_page <= 100`) and the `400 VALIDATION_ERROR` on violation can't drift between them. `GET /users/me/following` is paginated the same way (added alongside the Phase 2.5 hardening slice — it was the one list endpoint left unbounded).
 
 ## Authentication Flow
 
@@ -135,7 +157,7 @@ Each entry includes `portfolio_id` (added Milestone 4c, ADR-022 in [decisions.md
 ```
 POST   /api/v1/portfolios/:id/follow
 DELETE /api/v1/portfolios/:id/follow
-GET    /api/v1/users/me/following
+GET    /api/v1/users/me/following?page=1&per_page=20     # paginated, see Pagination above
 ```
 
 ## Example: Portfolio Detail Response
@@ -286,13 +308,21 @@ Added Milestone 6 (ADR-026). `portfolios[0]` corresponds to the first id in `ids
 
 ## Rate Limiting
 
-Standard headers on every response:
+Implemented via `flask-limiter` (ADR-032 in [decisions.md](./decisions.md)), Redis-backed in production. Standard headers on every response:
 ```
 X-RateLimit-Limit: 100
 X-RateLimit-Remaining: 87
 X-RateLimit-Reset: 1752480000
 ```
-Applied per-user for authenticated endpoints, per-IP for public/unauthenticated ones (discovery feed, public investor pages). The `broker-connections/:id/sync` endpoint has its own tighter limit independent of general API rate limits, since it triggers a real outbound call to a third-party broker API that has its own limits — see [broker-integrations.md](./broker-integrations.md).
+Applied per-user for authenticated endpoints (identity resolved from the access token, when present), per-IP otherwise (`POST /auth/login`, `POST /auth/register`, and any other public/unauthenticated route — the discovery feed, public investor pages). Limits:
+
+| Route | Limit |
+|---|---|
+| `POST /auth/login` | 5 per minute, 20 per hour |
+| `POST /auth/register` | 10 per hour |
+| Everything else (default) | 100 per minute |
+
+Exceeding a limit returns `429` with `error.code: "TOO_MANY_REQUESTS"` in the standard envelope. The `broker-connections/:id/sync` endpoint has its own tighter cooldown independent of this general rate limiting, since it triggers a real outbound call to a third-party broker API that has its own limits — see [broker-integrations.md](./broker-integrations.md).
 
 ## Versioning
 

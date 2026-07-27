@@ -6,7 +6,9 @@ which is the standard Flask app-factory pattern.
 
 import redis
 from flask_bcrypt import Bcrypt
-from flask_jwt_extended import JWTManager
+from flask_jwt_extended import JWTManager, get_jwt_identity, verify_jwt_in_request
+from flask_limiter import Limiter
+from flask_limiter.util import get_remote_address
 from flask_migrate import Migrate
 from flask_sqlalchemy import SQLAlchemy
 
@@ -14,6 +16,26 @@ db = SQLAlchemy()
 jwt = JWTManager()
 bcrypt = Bcrypt()
 migrate = Migrate()
+
+
+def _rate_limit_key() -> str:
+    """Per-user for authenticated requests, per-IP otherwise (docs/api.md
+    "Rate Limiting"). Flask-Limiter's key function runs before a route's own
+    @jwt_required() decorator, so the JWT hasn't been verified yet at this
+    point — verify_jwt_in_request(optional=True) does that verification here
+    (cheap: flask-jwt-extended caches the decode in `g`, so the route's own
+    decorator afterward is nearly free) and falls back to the IP when there's
+    no valid token at all (e.g. /auth/login, /auth/register, public routes).
+    """
+    try:
+        verify_jwt_in_request(optional=True)
+        identity = get_jwt_identity()
+    except Exception:
+        identity = None
+    return identity or get_remote_address()
+
+
+limiter = Limiter(key_func=_rate_limit_key, default_limits=["100 per minute"])
 
 
 class RedisClient:

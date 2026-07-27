@@ -11,7 +11,7 @@ import os
 from dotenv import load_dotenv
 from flask import Flask
 
-from app.extensions import bcrypt, db, jwt, migrate, redis_client
+from app.extensions import bcrypt, db, jwt, limiter, migrate, redis_client
 
 
 def create_app(config_name: str | None = None) -> Flask:
@@ -41,6 +41,7 @@ def create_app(config_name: str | None = None) -> Flask:
     bcrypt.init_app(app)
     migrate.init_app(app, db)
     redis_client.init_app(app)
+    limiter.init_app(app)
 
     # ── Register blueprints ───────────────────────────────────────────────────
     from app.routes.auth import auth_bp
@@ -56,5 +57,10 @@ def create_app(config_name: str | None = None) -> Flask:
     app.register_blueprint(portfolios_bp, url_prefix="/api/v1/portfolios")
     app.register_blueprint(discovery_bp, url_prefix="/api/v1/discovery")
     app.register_blueprint(public_investors_bp, url_prefix="/api/v1/public-investors")
+
+    # ── Error handling (ADR-029) ───────────────────────────────────────────────
+    from app.error_handlers import register_error_handlers
+
+    register_error_handlers(app)
 
     return app

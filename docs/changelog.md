@@ -10,6 +10,26 @@ Nothing pending beyond what's logged below — this section stays as the running
 
 ---
 
+## [2026-07-26] — Phase 2.5, Slice 1: Security & API Hardening
+
+### Added
+- `app/error_handlers.py` (ADR-029) — every failure path (missing/expired/malformed token, unmatched route, unhandled exception) returns the documented `{ data, meta, error }` envelope instead of flask-jwt-extended's or Werkzeug's own default response.
+- `app/services/refresh_token_service.py` (ADR-030) — refresh-token rotation with family-based reuse detection. A `fid` claim shared by both tokens at login, tracked in Redis; reusing a stale jti outside a 10-second grace window (tolerating a benign concurrent-tab race) kills the whole session family, forcing re-login. `POST /auth/logout` now has a real server-side effect it didn't have before.
+- CSRF protection actually enabled (`JWT_COOKIE_CSRF_PROTECT = True`, ADR-031) — previously documented in `docs/security.md` as if it were. In practice only gates `POST /auth/refresh`, the one cookie-authenticated endpoint.
+- Rate limiting via `flask-limiter`, Redis-backed (ADR-032) — previously documented in `docs/api.md` as if it were. Login: 5/minute, 20/hour. Register: 10/hour. Everything else: 100/minute default.
+- Unique constraint on `broker_connections.user_id` (ADR-033, migration `0005`) — a real database-level backstop for the one-connection-per-user rule, converting a previously-acknowledged app-level TOCTOU race into a clean `409 BROKER_ALREADY_CONNECTED`.
+- `GET /users/me/following` is now paginated (`app/schemas/pagination.py`'s shared `PaginationQuerySchema`, reused by `DiscoveryQuerySchema` too) — the one list endpoint left unbounded. Frontend's `useFollowingIds` requests `per_page=100`.
+- `/portfolios/compare`'s hand-rolled `ids` query-string parsing replaced with a proper marshmallow schema (`CompareQuerySchema`), matching the validation convention every other endpoint uses.
+- Frontend: `lib/api.ts` attaches the CSRF header automatically; `AuthProvider.logout()` refreshes and retries once if the access token has already expired from idling, so an idle-then-logout user's session is still revoked server-side.
+- 6 new backend test modules/additions (`test_error_handlers.py`, `test_rate_limiting.py`, reuse-detection/CSRF/logout tests in `test_auth.py`, pagination tests in `test_follows.py`, an `IntegrityError`-path test in `test_broker_connections.py`), 3 new frontend test files/additions (`api.test.ts`, `useFollowingIds.test.tsx`, logout-retry tests in `AuthProvider.test.tsx`).
+
+### Notes
+- Scoped from a production-readiness audit (security/database/API/performance/operational/deployment/documentation review) that found several places where the docs described protections or behavior the code didn't actually have — this slice closes those specific gaps rather than a general refactor. `docs/security.md`'s CORS section was also rewritten: no CORS config exists (or is needed) on the Flask side, since the frontend proxies same-origin (ADR-016) — the doc previously described CORS config as the mitigation, which was never actually built. The secret-rotation-runbook claim in the same doc was similarly softened to reflect that none exists yet — deferred to the Deployment hardening slice, once a real secrets manager is chosen.
+- Milestone 8 (Dhan broker integration) was built and verified in the same working session but is a separate, still-uncommitted slice of work — not part of this entry, and not merged into this branch's history. Its ADR-029/030 equivalents (Dhan limitations, cross-broker guard) would be renumbered on top of whichever of these two slices merges first.
+- Reliability, Performance, and Deployment are the next three hardening slices, in that order, before beta launch — see `docs/roadmap.md` "Phase 2.5."
+
+---
+
 ## [2026-07-26] — Milestone 7: Rules-Based Strategy Categorization (Phase 2)
 
 ### Added

@@ -12,6 +12,8 @@ import secrets
 import uuid
 from datetime import UTC, datetime, timedelta
 
+from sqlalchemy.exc import IntegrityError
+
 from app.extensions import db, redis_client
 from app.integrations.broker.base import BrokerAuthError
 from app.integrations.broker.registry import UnsupportedBrokerError, get_adapter
@@ -142,7 +144,22 @@ def handle_callback(
     )
     connection.status = "active"
     connection.token_expires_at = tokens.expires_at
-    db.session.commit()
+
+    try:
+        db.session.commit()
+    except IntegrityError as exc:
+        # broker_connections.user_id is unique (ADR-033): only reachable here
+        # when two concurrent first-time-connect requests for this user both
+        # passed the is_new check above before either committed. Converts
+        # what would otherwise be a duplicate row (or a raw 500) into the
+        # same clean error a sibling app-level guard raises for this class
+        # of race (see ADR-030/ADR-033).
+        db.session.rollback()
+        raise BrokerConnectionError(
+            "BROKER_ALREADY_CONNECTED",
+            "You already have a broker connection. Disconnect it before connecting a different one.",
+            409,
+        ) from exc
 
     audit_service.log_event(
         user_id,

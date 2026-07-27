@@ -21,6 +21,7 @@ from app.extensions import db
 from app.integrations.broker.base import BrokerAuthError, TokenPair
 from app.integrations.broker.registry import UnsupportedBrokerError
 from app.models.broker_connection import BrokerConnection
+from app.models.user import User
 
 REGISTER_URL = "/api/v1/auth/register"
 LOGIN_URL = "/api/v1/auth/login"
@@ -190,6 +191,43 @@ class TestCallback:
         assert second["id"] == first["id"]
         assert second["status"] == "active"
         assert BrokerConnection.query.filter_by(user_id=first_connection.user_id).count() == 1
+
+    def test_connecting_a_second_broker_conflicts_at_the_db_level(self, client):
+        """broker_connections.user_id is unique (ADR-033) — the real
+        backstop for the check-then-act race broker_connection_service's own
+        app-level lookup (filter_by(user_id, broker_name)) can't close by
+        itself. Simulated here by pre-existing a row for a *different*
+        broker_name than the one being connected, since only one adapter is
+        registered on this branch: that lookup then finds no same-broker row
+        (is_new=True), the INSERT is attempted, and only the unique
+        constraint stops a second row for this user.
+
+        Uses its own email rather than the shared VALID_USER — this file's
+        other tests reuse one hardcoded identity across every test and rely
+        on transaction rollback for isolation, which doesn't actually hold
+        for committed writes here (see conftest.py's `db` fixture docstring).
+        This test's own count==1 assertion would be a false pass if it
+        shared an identity another test had already attached a connection to.
+        """
+        token = _register_and_login(
+            client,
+            {
+                "email": "unique-broker-conflict@example.com",
+                "password": "Secure123",
+                "username": "uniquebrokerconflict",
+            },
+        )
+        user_id = User.query.filter_by(email="unique-broker-conflict@example.com").one().id
+        existing = BrokerConnection(
+            user_id=user_id, broker_name="some_other_broker", connection_method="broker_api"
+        )
+        db.session.add(existing)
+        db.session.commit()
+
+        resp = _connect_broker(client, token)
+        assert resp.status_code == 409
+        assert resp.get_json()["error"]["code"] == "BROKER_ALREADY_CONNECTED"
+        assert BrokerConnection.query.filter_by(user_id=user_id).count() == 1
 
 
 class TestOAuthState:
