@@ -83,13 +83,15 @@ sequenceDiagram
     W->>SRC: Fetch holdings (read-only)
     SRC-->>W: Holdings payload
     W->>W: Normalize to Nexarch Holding schema
-    W->>DB: Upsert holdings + snapshot
+    W->>DB: Delete + reinsert holdings, insert new snapshot
     W->>DB: Recompute portfolio health metrics
     W->>DB: Recompute strategy category tags (Milestone 7)
     Note over API,DB: Subsequent syncs run on a schedule<br/>(daily, since long-term portfolios don't need intraday refresh)
 ```
 
 Holdings are normalized into a single internal shape regardless of source (broker API or AA), so the rest of the system — analytics, discovery, public profiles — never needs to know where the data came from. This matters because, per [broker-integrations.md](./broker-integrations.md), the sourcing strategy itself (direct broker API vs. Account Aggregator) is still an open decision, and the rest of the codebase shouldn't be coupled to that choice.
+
+Neither write is a true upsert: Holdings and strategy-category tags are deleted and reinserted every sync (idempotent — a repeat sync reproduces the same rows, never accumulates); `portfolio_snapshots` rows are always inserted, never updated in place (ADR-025 — multiple same-day snapshots are an accepted, intentional state). See ADR-034 in [decisions.md](./decisions.md) for the sync pipeline's retry/idempotency policy and the failure-handling paths this diagram's happy-path view doesn't show.
 
 ## Caching Strategy
 

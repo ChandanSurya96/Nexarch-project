@@ -30,7 +30,7 @@ from flask import Blueprint, request
 from flask_jwt_extended import get_jwt_identity, jwt_required
 from marshmallow import ValidationError
 
-from app.schemas.portfolio import PortfolioSchema, PortfolioUpdateSchema
+from app.schemas.portfolio import CompareQuerySchema, PortfolioSchema, PortfolioUpdateSchema
 from app.services import portfolio_comparison_service, portfolio_profile_service
 from app.services.follow_service import follow, unfollow
 from app.services.portfolio_service import PortfolioAccessError, update_visibility
@@ -40,6 +40,7 @@ portfolios_bp = Blueprint("portfolios", __name__)
 
 _portfolio_schema = PortfolioSchema()
 _update_schema = PortfolioUpdateSchema()
+_compare_query_schema = CompareQuerySchema()
 
 
 def _current_user_id() -> uuid.UUID | None:
@@ -93,9 +94,7 @@ def get_portfolio_activity(portfolio_id: uuid.UUID):
 @jwt_required(optional=True)
 def get_portfolio_history(portfolio_id: uuid.UUID):
     try:
-        return success(
-            portfolio_profile_service.get_history_view(portfolio_id, _current_user_id())
-        )
+        return success(portfolio_profile_service.get_history_view(portfolio_id, _current_user_id()))
     except PortfolioAccessError as exc:
         return error(exc.code, exc.message, exc.status)
 
@@ -111,26 +110,16 @@ def get_portfolio_profile(portfolio_id: uuid.UUID):
         return error(exc.code, exc.message, exc.status)
 
 
-def _parse_compare_ids(raw: str) -> list[uuid.UUID]:
-    tokens = [token for token in raw.split(",") if token]
-    if len(tokens) != 2:
-        raise ValueError("`ids` must contain exactly two comma-separated portfolio ids.")
-    try:
-        return [uuid.UUID(token) for token in tokens]
-    except ValueError as exc:
-        raise ValueError("`ids` must contain two valid portfolio ids.") from exc
-
-
 @portfolios_bp.get("/compare")
 @jwt_required(optional=True)
 def compare_portfolios():
     try:
-        ids = _parse_compare_ids(request.args.get("ids", ""))
-    except ValueError as exc:
-        return error("VALIDATION_ERROR", str(exc), 400)
+        params = _compare_query_schema.load(request.args.to_dict())
+    except ValidationError as exc:
+        return error("VALIDATION_ERROR", str(exc.messages), 400)
 
     try:
-        return success(portfolio_comparison_service.compare(ids, _current_user_id()))
+        return success(portfolio_comparison_service.compare(params["ids"], _current_user_id()))
     except PortfolioAccessError as exc:
         return error(exc.code, exc.message, exc.status)
 

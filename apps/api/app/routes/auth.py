@@ -4,18 +4,23 @@ Endpoints (all under /api/v1/auth — prefix registered in create_app):
     POST /register     — create account
     POST /login        — exchange credentials for tokens
     POST /refresh      — get a new access token (reads refresh cookie)
-    POST /logout       — clear refresh cookie
+    POST /logout       — clear refresh cookie, revoke the session server-side
 
 Token model (ADR-004, api.md):
     - Access token: short-lived (15 min), returned in the JSON response body.
     - Refresh token: long-lived (30 days), set/cleared as an httpOnly cookie —
       never in the response body or JS-accessible storage.
+
+Refresh-token rotation with reuse detection (ADR-030): both tokens carry a
+`fid` (family id) custom claim. login/refresh/logout all go through
+refresh_token_service.py, which is the only place that reads/writes the
+Redis-backed family state — see that module's docstring for the full
+reuse-detection design.
 """
 
 from flask import Blueprint, request
 from flask_jwt_extended import (
-    create_access_token,
-    create_refresh_token,
+    get_jwt,
     get_jwt_identity,
     jwt_required,
     set_refresh_cookies,
@@ -23,9 +28,11 @@ from flask_jwt_extended import (
 )
 from marshmallow import ValidationError
 
+from app.extensions import limiter
 from app.schemas.auth import LoginSchema, RegisterSchema
-from app.services import audit_service
+from app.services import audit_service, refresh_token_service
 from app.services.auth_service import AuthError, authenticate_user, register_user
+from app.services.refresh_token_service import RefreshReuseError, RefreshSessionInvalidError
 from app.utils.responses import error, success
 
 auth_bp = Blueprint("auth", __name__)
@@ -35,6 +42,7 @@ _login_schema = LoginSchema()
 
 
 @auth_bp.post("/register")
+@limiter.limit("10 per hour")
 def register():
     """POST /api/v1/auth/register — { email, password, username }
 
@@ -62,6 +70,7 @@ def register():
 
 
 @auth_bp.post("/login")
+@limiter.limit("5 per minute;20 per hour")
 def login():
     """POST /api/v1/auth/login — { email, password }
 
@@ -80,8 +89,8 @@ def login():
         return error(exc.code, exc.message, exc.status)
 
     identity = str(user.id)
-    access_token = create_access_token(identity=identity)
-    refresh_token = create_refresh_token(identity=identity)
+    access_token, refresh_token = refresh_token_service.issue_new_family(identity)
+    audit_service.log_event(identity, "login")
 
     response, status_code = success({"access_token": access_token})
     # Set the refresh token as an httpOnly cookie — not in the body.
@@ -94,13 +103,31 @@ def login():
 def refresh():
     """POST /api/v1/auth/refresh
 
-    Reads the refresh token from the httpOnly cookie.
-    Returns a new access token in the body and rotates the refresh cookie.
-    Returns 401 if the refresh token is missing or invalid.
+    Reads the refresh token from the httpOnly cookie, rotates it (ADR-030).
+    Returns a new access token in the body and a new refresh cookie.
+    Returns 401 if the refresh token is missing, expired, or already used —
+    a reused token revokes the whole session family, not just this request.
     """
     identity = get_jwt_identity()
-    new_access_token = create_access_token(identity=identity)
-    new_refresh_token = create_refresh_token(identity=identity)
+    claims = get_jwt()
+    family_id = claims.get("fid")
+    incoming_jti = claims["jti"]
+
+    if not family_id:
+        # A refresh token issued before ADR-030 (no fid claim) — treat as an
+        # invalid session rather than crashing; forces a normal re-login.
+        return error("REFRESH_SESSION_INVALID", "Please log in again.", 401)
+
+    try:
+        new_access_token, new_refresh_token = refresh_token_service.rotate(
+            identity, family_id, incoming_jti
+        )
+    except RefreshReuseError as exc:
+        audit_service.log_event(identity, "refresh_reuse_detected")
+        return error("REFRESH_TOKEN_REUSED", str(exc), 401)
+    except RefreshSessionInvalidError as exc:
+        return error("REFRESH_SESSION_INVALID", str(exc), 401)
+
     audit_service.log_event(identity, "token_refresh")
 
     response, status_code = success({"access_token": new_access_token})
@@ -113,10 +140,18 @@ def refresh():
 def logout():
     """POST /api/v1/auth/logout — requires a valid access token.
 
-    Clears the refresh cookie. The access token is not invalidated server-side
-    (token blacklisting is a Milestone 2+ concern — see task.md).
+    Clears the refresh cookie AND revokes the session's refresh-token family
+    server-side (ADR-030) — a stolen-but-unused refresh token from this
+    session becomes immediately dead too, not just the cookie cleared client-side.
     Returns 200 with data: null.
     """
+    identity = get_jwt_identity()
+    claims = get_jwt()
+    family_id = claims.get("fid")
+    if family_id:
+        refresh_token_service.kill_family(family_id)
+    audit_service.log_event(identity, "logout")
+
     response, status_code = success(None)
     unset_jwt_cookies(response)
     return response, status_code

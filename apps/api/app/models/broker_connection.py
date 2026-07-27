@@ -16,11 +16,17 @@ class BrokerConnection(db.Model):
     __tablename__ = "broker_connections"
 
     id: Mapped[uuid.UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    # unique, not just indexed (ADR-033): at most one broker connection per
+    # user, period — disconnect() fully deletes a row rather than soft-
+    # deleting it, so the true invariant is "0 or 1 rows for this user_id."
+    # Backstops the app-level check in broker_connection_service.py, whose
+    # own check-then-act guard (ADR-030) has a real, acknowledged TOCTOU
+    # race under concurrent requests.
     user_id: Mapped[uuid.UUID] = mapped_column(
         Uuid(as_uuid=True),
         ForeignKey("users.id", ondelete="CASCADE"),
         nullable=False,
-        index=True,
+        unique=True,
     )
     broker_name: Mapped[str] = mapped_column(String(50), nullable=False)
     # "broker_api" | "account_aggregator" — stored as a plain string so the model

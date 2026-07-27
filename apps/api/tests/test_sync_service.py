@@ -15,7 +15,13 @@ from unittest.mock import MagicMock
 import pytest
 
 from app.extensions import db
-from app.integrations.broker.base import BrokerAPIError, RawHolding, TokenPair
+from app.integrations.broker.base import (
+    BrokerAPIError,
+    BrokerRateLimitError,
+    BrokerTokenExpiredError,
+    RawHolding,
+)
+from app.models.audit_log import AuditLog
 from app.models.broker_connection import BrokerConnection
 from app.models.holding import Holding
 from app.models.portfolio import Portfolio
@@ -70,9 +76,7 @@ class _FakeAdapter:
                 self.close = close
 
         closes = self._historical_prices_by_isin.get(isin, [])
-        return [
-            _Point(from_date + timedelta(days=i), close) for i, close in enumerate(closes)
-        ]
+        return [_Point(from_date + timedelta(days=i), close) for i, close in enumerate(closes)]
 
 
 def _make_connection(email: str) -> BrokerConnection:
@@ -103,9 +107,7 @@ def mock_discovery_cache(monkeypatch):
 class TestRunSync:
     def test_creates_portfolio_and_holdings_on_first_sync(self, monkeypatch):
         connection = _make_connection("sync-basic@example.com")
-        monkeypatch.setattr(
-            "app.services.sync_service.get_adapter", lambda name: _FakeAdapter()
-        )
+        monkeypatch.setattr("app.services.sync_service.get_adapter", lambda name: _FakeAdapter())
 
         run_sync(str(connection.id))
 
@@ -156,9 +158,7 @@ class TestRunSync:
         (the cooldown permitting) must produce two distinct snapshot rows,
         not one overwritten in place."""
         connection = _make_connection("sync-same-day@example.com")
-        monkeypatch.setattr(
-            "app.services.sync_service.get_adapter", lambda name: _FakeAdapter()
-        )
+        monkeypatch.setattr("app.services.sync_service.get_adapter", lambda name: _FakeAdapter())
 
         run_sync(str(connection.id))
         run_sync(str(connection.id))
@@ -170,6 +170,113 @@ class TestRunSync:
         # is what tells them apart chronologically.
         assert snapshots[0].snapshot_date == snapshots[1].snapshot_date
         assert snapshots[0].created_at != snapshots[1].created_at
+
+
+class TestRunSyncFailureBranches:
+    """ADR-034 — every failure branch must be consistent: connection.status
+    set, an audit_logs "error" event written, and (for the two branches
+    Celery can retry) the exception re-raised so autoretry_for actually
+    sees it."""
+
+    def _error_events(self, user_id) -> list[AuditLog]:
+        return AuditLog.query.filter_by(user_id=user_id, event_type="error").all()
+
+    def test_token_expired_marks_status_and_audits_without_raising(self, monkeypatch):
+        connection = _make_connection("sync-expired@example.com")
+
+        class _ExpiredAdapter:
+            def fetch_holdings(self, access_token):
+                raise BrokerTokenExpiredError("token expired")
+
+        monkeypatch.setattr("app.services.sync_service.get_adapter", lambda name: _ExpiredAdapter())
+
+        run_sync(str(connection.id))  # must not raise
+
+        db.session.refresh(connection)
+        assert connection.status == "expired"
+        events = self._error_events(connection.user_id)
+        assert len(events) == 1
+        assert events[0].event_metadata["reason"] == "token_expired"
+
+    def test_api_error_marks_status_and_audits_without_raising(self, monkeypatch):
+        connection = _make_connection("sync-api-error@example.com")
+
+        class _ApiErrorAdapter:
+            def fetch_holdings(self, access_token):
+                raise BrokerAPIError("some non-rate-limit API failure")
+
+        monkeypatch.setattr(
+            "app.services.sync_service.get_adapter", lambda name: _ApiErrorAdapter()
+        )
+
+        run_sync(str(connection.id))  # must not raise — not retried, unlike rate limit
+
+        db.session.refresh(connection)
+        assert connection.status == "error"
+        assert len(self._error_events(connection.user_id)) == 1
+
+    def test_rate_limit_non_final_attempt_reraises_without_touching_status_or_audit(
+        self, monkeypatch
+    ):
+        """A retry Celery still has attempts left for — marking the
+        connection "error" here would flip status back to "active" on a
+        successful retry, and leave a spurious audit row for what turns out
+        to be a successful sync."""
+        connection = _make_connection("sync-rate-limit-retry@example.com")
+
+        class _RateLimitAdapter:
+            def fetch_holdings(self, access_token):
+                raise BrokerRateLimitError("rate limited")
+
+        monkeypatch.setattr(
+            "app.services.sync_service.get_adapter", lambda name: _RateLimitAdapter()
+        )
+
+        with pytest.raises(BrokerRateLimitError):
+            run_sync(str(connection.id), is_final_attempt=False)
+
+        db.session.refresh(connection)
+        assert connection.status == "active"  # unchanged
+        assert len(self._error_events(connection.user_id)) == 0
+
+    def test_rate_limit_final_attempt_marks_status_and_audits_then_reraises(self, monkeypatch):
+        connection = _make_connection("sync-rate-limit-final@example.com")
+
+        class _RateLimitAdapter:
+            def fetch_holdings(self, access_token):
+                raise BrokerRateLimitError("rate limited")
+
+        monkeypatch.setattr(
+            "app.services.sync_service.get_adapter", lambda name: _RateLimitAdapter()
+        )
+
+        with pytest.raises(BrokerRateLimitError):
+            run_sync(str(connection.id), is_final_attempt=True)
+
+        db.session.refresh(connection)
+        assert connection.status == "error"
+        assert len(self._error_events(connection.user_id)) == 1
+
+    def test_unexpected_exception_after_fetch_marks_status_audits_and_reraises(self, monkeypatch):
+        """The previously-uncaught tail — anything past a successful
+        fetch_holdings that isn't one of the three known broker-error
+        types. Must not be silent: this used to leave connection.status
+        stale and write no audit event at all."""
+        connection = _make_connection("sync-unexpected-error@example.com")
+        monkeypatch.setattr("app.services.sync_service.get_adapter", lambda name: _FakeAdapter())
+        monkeypatch.setattr(
+            "app.services.sync_service.normalize_holdings",
+            MagicMock(side_effect=RuntimeError("boom")),
+        )
+
+        with pytest.raises(RuntimeError):
+            run_sync(str(connection.id))
+
+        db.session.refresh(connection)
+        assert connection.status == "error"
+        events = self._error_events(connection.user_id)
+        assert len(events) == 1
+        assert events[0].event_metadata["reason"] == "unexpected_error"
 
 
 class TestStrategyTagging:
@@ -188,9 +295,7 @@ class TestStrategyTagging:
         # test_discovery.py's TestStrategyCategories note) — just confirms
         # run_sync never fails for lack of them, and all 8 exist afterward.
         connection = _make_connection("sync-no-categories-yet@example.com")
-        monkeypatch.setattr(
-            "app.services.sync_service.get_adapter", lambda name: _FakeAdapter()
-        )
+        monkeypatch.setattr("app.services.sync_service.get_adapter", lambda name: _FakeAdapter())
 
         run_sync(str(connection.id))  # must not raise
 
@@ -234,9 +339,7 @@ class TestStrategyTagging:
                 "INE467B01029": _FLAT_CLOSES_64,
             }
         )
-        monkeypatch.setattr(
-            "app.services.sync_service.get_adapter", lambda name: low_risk_adapter
-        )
+        monkeypatch.setattr("app.services.sync_service.get_adapter", lambda name: low_risk_adapter)
         run_sync(str(connection.id))
 
         portfolio = Portfolio.query.filter_by(user_id=connection.user_id).first()
@@ -246,9 +349,7 @@ class TestStrategyTagging:
         # None -> no tags should match anymore, and the old "low-risk" row
         # must be gone, not left behind alongside nothing new.
         no_price_adapter = _FakeAdapter()
-        monkeypatch.setattr(
-            "app.services.sync_service.get_adapter", lambda name: no_price_adapter
-        )
+        monkeypatch.setattr("app.services.sync_service.get_adapter", lambda name: no_price_adapter)
         run_sync(str(connection.id))
 
         assert self._tag_slugs(portfolio.id) == set()
