@@ -63,6 +63,6 @@ None of this blocks Phase 1–3 work. It's a standing constraint on copy and fea
 ## Incident Response Basics
 
 - All broker connection events (connect, disconnect, sync, error, token refresh) logged to `audit_logs` (see [database.md](./database.md)).
-- Structured application logging with alerting on anomalies (spike in failed syncs, spike in auth failures).
+- **Structured (JSON) application logging is real now** (ADR-034 in [decisions.md](./decisions.md)) — every log line carries a request-id/user-id for correlation, and every sync failure path (token-expiry, rate-limit, generic API error, and previously-uncaught unexpected errors) writes both a log line and an `audit_logs` "error" event consistently. **Alerting on anomalies (a spike in failed syncs, a spike in auth failures) is still not built** — the logs above are designed to be pipeable into whatever monitoring/alerting tool gets chosen at deployment time (see `docs/roadmap.md` "Phase 2.5," Deployment slice), but no external service is wired in yet, and there's nowhere for an alert to go until one is.
 - A documented incident-response runbook (who's on call, how a broker-token leak would be contained and disclosed) should exist before real user broker tokens are stored in production — this is a pre-launch checklist item, not a someday item.
 - Independent security review / basic penetration test recommended before public launch, given the sensitivity of what's being stored.

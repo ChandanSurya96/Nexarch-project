@@ -10,6 +10,25 @@ Nothing pending beyond what's logged below — this section stays as the running
 
 ---
 
+## [2026-07-27] — Phase 2.5, Slice 2: Reliability & Observability
+
+### Added
+- Sync-pipeline retry policy (ADR-034): `sync_portfolio_task` retries a rate-limited broker call up to 3 times with exponential backoff (capped at 10 minutes) — safe because nothing is written to the database before that failure can occur. Token-expiry and unexpected errors are never retried.
+- Every `run_sync` failure path — token-expiry, rate-limit (on final attempt), generic API error, and the previously-uncaught tail (normalization/DB-write/health-metric/categorization errors) — now consistently sets `connection.status`, writes a structured log line, and writes an `audit_logs` "error" event. Before this, the last category was completely silent: no status update, no log, no audit row.
+- `sync_all_active_connections` (the daily scheduled sync) now retries connections marked `"error"` (transient rate-limit/API failures), not just `"active"` ones — previously a connection that hit a rate limit once would silently drop out of every future scheduled sync, forever.
+- `task_acks_late`/`task_reject_on_worker_lost` added to the Celery config — a worker crash or OOM mid-sync no longer silently loses the task; it's redelivered to another worker instead.
+- Structured (JSON) application logging (`app/logging_config.py`) — every log line carries a timestamp, level, message, and a per-request correlation id (`X-Request-ID` response header, echoed into every log line for that request). Previously there was exactly one logging call in the entire backend.
+- `GET /health` (liveness) and `GET /health/ready` (readiness — checks DB and Redis, both now with explicit short timeouts) — no health-check endpoints existed before this.
+- New backend test files: `test_sync_tasks.py`, `test_health.py`, `test_logging_config.py`, plus new failure-branch tests in `test_sync_service.py`.
+
+### Notes
+- Scoped from `docs/roadmap.md`'s Phase 2.5 "Reliability" bullet, which no prior ADR had turned into a concrete design. A Plan-agent review that read the actual Celery 5.4/Kombu source caught a critical bug in the first draft before it shipped: the rate-limit exception handler was swallowing the error and returning normally, which would have made the new retry config a silent no-op.
+- "Monitoring and alerting" was deliberately scoped to foundation-only this slice (structured logs, health endpoints, audit-log consistency) — no external alerting/APM service (Sentry, Datadog, etc.) is wired in, since there's nowhere to alert into yet and picking one is a real commitment better tied to the Deployment slice's hosting decision.
+- A genuinely dangerous testing gotcha was found and fixed while writing this slice's own tests: `sync_all_active_connections` is itself a Celery task, and calling it directly (rather than via `.run()`) silently pushes a *different* Flask app context — one built from ambient environment config, not the pytest session's test config — pointing queries at real dev Postgres/Redis with no error to signal it. See ADR-034 and `test_sync_tasks.py`'s own docstring.
+- Performance and Deployment are the next two hardening slices, in that order, before beta launch — see `docs/roadmap.md` "Phase 2.5."
+
+---
+
 ## [2026-07-26] — Phase 2.5, Slice 1: Security & API Hardening
 
 ### Added

@@ -56,6 +56,7 @@ Every failure path returns the envelope above — including ones that never reac
 | `NOT_FOUND` | 404 | No route matches the request path |
 | `METHOD_NOT_ALLOWED` | 405 | Route exists but not for this HTTP method |
 | `INTERNAL_SERVER_ERROR` | 500 | Unhandled exception — logged server-side with full detail, never leaked to the client |
+| `NOT_READY` | 503 | `GET /health/ready` only — DB and/or Redis unreachable (ADR-034) |
 
 ## Pagination
 
@@ -90,6 +91,13 @@ POST /api/v1/auth/logout          (clears the refresh cookie)
 Access tokens are short-lived (15 min); refresh tokens are longer-lived and stored as httpOnly secure cookies, not in frontend JS-accessible storage. Full reasoning in [security.md](./security.md).
 
 ## Core Endpoint Groups
+
+### Health (unprefixed — not under `/api/v1`)
+```
+GET    /health         # liveness — process is up, no dependency checks
+GET    /health/ready   # readiness — confirms DB and Redis are reachable
+```
+Added ADR-034 in [decisions.md](./decisions.md). No auth, no rate limit — deployment platforms expect an unauthenticated, fast-responding probe, the same convention `docker-compose.yml` already uses for the `postgres`/`redis` containers themselves. `/health` always returns `200` regardless of dependency state (a DB/Redis outage shouldn't also fail the liveness probe and get the process restarted for no reason); `/health/ready` returns `200` with `{"status": "ok", "checks": {"database": true, "redis": true}}` when both are reachable, or `503` with `error.code: "NOT_READY"` otherwise.
 
 ### Users & Profiles
 ```

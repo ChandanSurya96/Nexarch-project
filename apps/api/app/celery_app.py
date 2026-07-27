@@ -48,6 +48,20 @@ def _make_celery(app) -> Celery:
             "schedule": crontab(hour=2, minute=0),
         },
     }
+    # ADR-034 — without these, a worker crash/OOM mid-task silently loses
+    # the sync forever: the message is acked (and gone) the instant it's
+    # received (Celery/Redis default), regardless of whether the task ever
+    # finishes. With acks_late, a message is only acked after the task
+    # completes (success OR failure); if the worker dies first, Redis
+    # redelivers it to another worker after the broker's visibility
+    # timeout. task_reject_on_worker_lost explicitly rejects (triggering
+    # redelivery) rather than silently acking when a worker is confirmed
+    # lost. Safe to enable because run_sync is designed to be safely
+    # re-run from scratch (see sync_service.py's own retry/idempotency
+    # notes) — a redelivered task re-executes the whole function, not a
+    # partial resume.
+    celery.conf.task_acks_late = True
+    celery.conf.task_reject_on_worker_lost = True
     return celery
 
 

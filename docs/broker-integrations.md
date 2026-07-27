@@ -79,8 +79,8 @@ Not all brokers support push notifications for portfolio changes; poll-based syn
 
 - Tokens encrypted at rest (see [security.md](./security.md) for the encryption approach).
 - Tokens scoped to read-only where the broker's permission model supports scoping.
-- Every connect/disconnect/sync/error event written to `audit_logs` (see [database.md](./database.md)).
-- Sync jobs back off on broker rate-limit responses rather than retrying immediately.
+- Every connect/disconnect/sync/error event written to `audit_logs` (see [database.md](./database.md)) and to structured application logs (ADR-034 in [decisions.md](./decisions.md)).
+- A rate-limited sync retries with exponential backoff (up to 3 attempts, capped at 10 minutes between tries — `sync_portfolio_task`'s `autoretry_for`/`retry_backoff` config, ADR-034) rather than failing permanently on the first hit. A non-rate-limit API error or an expired token is not retried — see "Refresh Strategy" above and ADR-034 for why.
 - No scraping, ever, of any broker's app or website for a broker without a public API. If a broker doesn't expose one, the answer is CAS upload (see below), the AA framework, or waiting — not reverse engineering a private interface. This was a live concern before Groww shipped a public API in 2025; the principle stays even though that specific case resolved itself.
 
 ## Fallback Path: CAS Upload

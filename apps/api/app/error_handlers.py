@@ -19,7 +19,7 @@ relative to jwt.init_app doesn't matter for those specifically.
 
 from __future__ import annotations
 
-from flask import Flask, current_app
+from flask import Flask, current_app, request
 from werkzeug.exceptions import HTTPException
 
 from app.extensions import jwt
@@ -80,6 +80,10 @@ def register_error_handlers(app: Flask) -> None:
     @app.errorhandler(Exception)
     def _unhandled_exception(exc: Exception):
         # Never leak internal exception details to the client — log the real
-        # exception server-side, return a generic message.
-        current_app.logger.exception("Unhandled exception")
+        # exception server-side (request_id/user_id are attached by the
+        # logging filter configured in app/logging_config.py, ADR-034),
+        # return a generic message.
+        current_app.logger.exception(
+            "Unhandled exception: method=%s path=%s", request.method, request.path
+        )
         return error("INTERNAL_SERVER_ERROR", "An unexpected error occurred.", 500)

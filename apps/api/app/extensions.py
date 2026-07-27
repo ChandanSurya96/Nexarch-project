@@ -52,7 +52,18 @@ class RedisClient:
         self._client: redis.Redis | None = None
 
     def init_app(self, app) -> None:
-        self._client = redis.Redis.from_url(app.config["REDIS_URL"], decode_responses=True)
+        # Explicit short timeouts (redis-py defaults to None = block
+        # forever): without these, a blackholed connection — dropped
+        # packets, not an active refusal, the classic network-partition
+        # case — can hang for minutes rather than failing fast. Matters
+        # here and for the /health/ready readiness probe (ADR-034), which
+        # would otherwise be only as reliable as an unbounded socket call.
+        self._client = redis.Redis.from_url(
+            app.config["REDIS_URL"],
+            decode_responses=True,
+            socket_connect_timeout=2,
+            socket_timeout=2,
+        )
 
     def get(self, key: str) -> str | None:
         return self._client.get(key)
@@ -68,6 +79,12 @@ class RedisClient:
         on sync completion."""
         for key in self._client.scan_iter(match=pattern):
             self._client.delete(key)
+
+    def ping(self) -> bool:
+        """Used by GET /health/ready (ADR-034) — raises on an unreachable
+        server rather than returning False, same as the underlying
+        redis-py client; the route catches it."""
+        return self._client.ping()
 
 
 redis_client = RedisClient()
