@@ -22,7 +22,11 @@ class Config:
     JWT_TOKEN_LOCATION: list[str] = ["headers", "cookies"]
     JWT_COOKIE_SECURE: bool = os.environ.get("FLASK_ENV", "development") != "development"
     JWT_COOKIE_SAMESITE: str = "Lax"
-    JWT_COOKIE_CSRF_PROTECT: bool = False  # CSRF protection for cookies — Phase 2 hardening
+    # CSRF protection for the refresh-token cookie (ADR-031) — only ever
+    # actually gates POST /auth/refresh in practice, since the access token
+    # only ever travels via the Authorization header (ADR-017), never a
+    # cookie, and flask-jwt-extended only checks CSRF for cookie-sourced tokens.
+    JWT_COOKIE_CSRF_PROTECT: bool = True
 
     # ── Redis ─────────────────────────────────────────────────────────────────
     REDIS_URL: str = os.environ.get("REDIS_URL", "redis://localhost:6379/0")
@@ -30,6 +34,11 @@ class Config:
     # ── Celery ────────────────────────────────────────────────────────────────
     CELERY_BROKER_URL: str = REDIS_URL
     CELERY_RESULT_BACKEND: str = REDIS_URL
+
+    # ── Rate limiting (ADR-032) ─────────────────────────────────────────────────
+    RATELIMIT_STORAGE_URI: str = REDIS_URL
+    RATELIMIT_HEADERS_ENABLED: bool = True
+    RATELIMIT_ENABLED: bool = True
 
 
 class DevelopmentConfig(Config):
@@ -49,6 +58,19 @@ class TestingConfig(Config):
     JWT_COOKIE_SECURE: bool = False
     # Use a short-lived access token in tests so expiry edge cases are easy to trigger.
     JWT_ACCESS_TOKEN_EXPIRES: int = 60  # 1 minute
+    # CSRF stays enabled in tests (inherited True from Config) — disabling it
+    # for tests would mean this protection ships with zero coverage.
+    # RATELIMIT_ENABLED stays True (inherited from Config) — real enforcement
+    # runs in tests too; tests/conftest.py resets the limiter's storage before
+    # every test so cross-test accumulation doesn't trip limits meant for
+    # real traffic (see that fixture's docstring for why — route-decorated
+    # limits enforce unconditionally once registered, regardless of
+    # Limiter.enabled, which only gates setup-at-init-time and headers).
+    # In-memory, not the real Redis (see docs/development-guide.md "no live
+    # external dependency" testing philosophy) — flask-limiter's own storage
+    # is independent of app/extensions.py's redis_client wrapper, so faking
+    # that wrapper alone (as other tests do) wouldn't isolate this.
+    RATELIMIT_STORAGE_URI: str = "memory://"
 
 
 config_map: dict[str, type[Config]] = {

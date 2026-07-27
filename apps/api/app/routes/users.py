@@ -14,12 +14,13 @@ GET /me/following is added in Milestone 3 alongside the Follows feature.
 
 import uuid
 
-from flask import Blueprint
+from flask import Blueprint, request
 from flask_jwt_extended import get_jwt_identity, jwt_required
+from marshmallow import ValidationError
 
 from app.extensions import db
 from app.models.user import User
-from app.schemas.portfolio import PortfolioSchema
+from app.schemas.portfolio import FollowingQuerySchema, PortfolioSchema
 from app.schemas.user import UserSchema
 from app.services.follow_service import list_following
 from app.services.portfolio_service import get_my_portfolio
@@ -29,6 +30,7 @@ users_bp = Blueprint("users", __name__)
 
 _user_schema = UserSchema()
 _portfolio_schema = PortfolioSchema()
+_following_query_schema = FollowingQuerySchema()
 
 
 @users_bp.get("/me")
@@ -54,10 +56,27 @@ def get_me():
 @users_bp.get("/me/following")
 @jwt_required()
 def get_following():
-    """GET /api/v1/users/me/following — portfolios the caller follows."""
+    """GET /api/v1/users/me/following — portfolios the caller follows, paginated."""
+    try:
+        params = _following_query_schema.load(request.args.to_dict())
+    except ValidationError as exc:
+        return error("VALIDATION_ERROR", str(exc.messages), 400)
+
     user_id = uuid.UUID(get_jwt_identity())
-    portfolios = list_following(user_id)
-    return success(_portfolio_schema.dump(portfolios, many=True))
+    portfolios, total = list_following(user_id, params["page"], params["per_page"])
+    total_pages = (total + params["per_page"] - 1) // params["per_page"] if total else 0
+
+    return success(
+        _portfolio_schema.dump(portfolios, many=True),
+        meta={
+            "pagination": {
+                "page": params["page"],
+                "per_page": params["per_page"],
+                "total": total,
+                "total_pages": total_pages,
+            }
+        },
+    )
 
 
 @users_bp.get("/me/portfolio")

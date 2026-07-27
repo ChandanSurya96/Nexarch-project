@@ -7,9 +7,39 @@ the following list, and the discovery feed describe a portfolio identically
 wherever they overlap.
 """
 
-from marshmallow import Schema, fields
+import uuid
 
+from marshmallow import Schema, ValidationError, fields
+
+from app.schemas.pagination import PaginationQuerySchema
 from app.services import portfolio_service
+
+
+class FollowingQuerySchema(PaginationQuerySchema):
+    """Query-param validation for GET /users/me/following — no extra
+    filters yet, but kept as its own schema (not the bare pagination one
+    directly) so a future filter/sort param has somewhere to go without
+    changing every paginated endpoint's schema."""
+
+
+class _PortfolioIdPairField(fields.Field):
+    """A single query-string value of exactly two comma-separated portfolio
+    ids — the wire shape GET /portfolios/compare?ids=a,b has always used."""
+
+    def _deserialize(self, value, attr, data, **kwargs) -> list[uuid.UUID]:
+        tokens = [token for token in str(value).split(",") if token]
+        if len(tokens) != 2:
+            raise ValidationError("`ids` must contain exactly two comma-separated portfolio ids.")
+        try:
+            return [uuid.UUID(token) for token in tokens]
+        except ValueError as exc:
+            raise ValidationError("`ids` must contain two valid portfolio ids.") from exc
+
+
+class CompareQuerySchema(Schema):
+    """Query-param validation for GET /portfolios/compare."""
+
+    ids = _PortfolioIdPairField(required=True)
 
 
 class HoldingSchema(Schema):

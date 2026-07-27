@@ -74,9 +74,7 @@ class TestFollow:
         assert resp.status_code == 401
 
     def test_cannot_follow_own_portfolio(self, client):
-        owner_id, owner_token = _register_and_login(
-            client, "follow-self@example.com", "followself"
-        )
+        owner_id, owner_token = _register_and_login(client, "follow-self@example.com", "followself")
         portfolio = _make_portfolio(owner_id, is_public=True)
 
         resp = client.post(
@@ -131,3 +129,64 @@ class TestListFollowing:
     def test_following_requires_auth(self, client):
         resp = client.get(FOLLOWING_URL)
         assert resp.status_code == 401
+
+
+class TestListFollowingPagination:
+    def test_pagination_meta_reflects_total_and_per_page(self, client):
+        owner_id, _ = _register_and_login(client, "page-owner@example.com", "pageowner")
+        portfolios = [_make_portfolio(owner_id, is_public=True) for _ in range(3)]
+
+        _, follower_token = _register_and_login(client, "pager@example.com", "pager1")
+        headers = _auth_header(follower_token)
+        for p in portfolios:
+            client.post(f"/api/v1/portfolios/{p.id}/follow", headers=headers)
+
+        resp = client.get(f"{FOLLOWING_URL}?per_page=2", headers=headers)
+        assert resp.status_code == 200
+        body = resp.get_json()
+        assert len(body["data"]) == 2
+        assert body["meta"]["pagination"] == {
+            "page": 1,
+            "per_page": 2,
+            "total": 3,
+            "total_pages": 2,
+        }
+
+    def test_second_page_returns_the_remainder(self, client):
+        owner_id, _ = _register_and_login(client, "page-owner2@example.com", "pageowner2")
+        portfolios = [_make_portfolio(owner_id, is_public=True) for _ in range(3)]
+
+        _, follower_token = _register_and_login(client, "pager2@example.com", "pager2")
+        headers = _auth_header(follower_token)
+        for p in portfolios:
+            client.post(f"/api/v1/portfolios/{p.id}/follow", headers=headers)
+
+        resp = client.get(f"{FOLLOWING_URL}?per_page=2&page=2", headers=headers)
+        assert resp.status_code == 200
+        body = resp.get_json()
+        assert len(body["data"]) == 1
+        assert body["meta"]["pagination"]["page"] == 2
+
+    def test_page_past_the_end_returns_an_empty_list_not_an_error(self, client):
+        owner_id, _ = _register_and_login(client, "page-owner3@example.com", "pageowner3")
+        portfolio = _make_portfolio(owner_id, is_public=True)
+
+        _, follower_token = _register_and_login(client, "pager3@example.com", "pager3")
+        headers = _auth_header(follower_token)
+        client.post(f"/api/v1/portfolios/{portfolio.id}/follow", headers=headers)
+
+        resp = client.get(f"{FOLLOWING_URL}?page=99", headers=headers)
+        assert resp.status_code == 200
+        assert resp.get_json()["data"] == []
+
+    def test_per_page_over_the_max_is_rejected(self, client):
+        _, follower_token = _register_and_login(client, "pager4@example.com", "pager4")
+        resp = client.get(f"{FOLLOWING_URL}?per_page=101", headers=_auth_header(follower_token))
+        assert resp.status_code == 400
+        assert resp.get_json()["error"]["code"] == "VALIDATION_ERROR"
+
+    def test_page_zero_is_rejected(self, client):
+        _, follower_token = _register_and_login(client, "pager5@example.com", "pager5")
+        resp = client.get(f"{FOLLOWING_URL}?page=0", headers=_auth_header(follower_token))
+        assert resp.status_code == 400
+        assert resp.get_json()["error"]["code"] == "VALIDATION_ERROR"

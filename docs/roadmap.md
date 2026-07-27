@@ -74,6 +74,17 @@ Explicitly excluded from Phase 1 (per founding scope, restated so it doesn't qui
 - Watchlists (follow without needing an account relationship)
 - Deeper portfolio-health metrics — this is also where a market-data dependency for volatility gets resolved (see [database.md](./database.md))
 
+## Phase 2.5 — Production Hardening
+
+**Goal:** Close the gap between what the docs claimed and what the code actually did, before adding more surface area (Account Aggregator, additional brokers) on top of it. Sequenced as four focused slices rather than one undifferentiated cleanup pass:
+
+1. **Security & API** *(done — see [decisions.md](./decisions.md) ADR-029 through ADR-033)*: every failure path returns the documented response envelope; refresh-token rotation with family-based reuse detection; CSRF protection actually enabled (previously documented as if it were); rate limiting actually implemented (previously documented as if it were); a real database-level backstop for one-broker-connection-per-user; `GET /users/me/following` paginated like every other list endpoint; `/portfolios/compare`'s query parsing moved onto the same schema convention every other endpoint uses.
+2. **Reliability** *(done — see [decisions.md](./decisions.md) ADR-034)*: sync-pipeline retry policy (rate-limit failures retry with backoff; token-expiry and unexpected errors don't); every sync failure path now consistently sets connection status, logs, and audit-logs (previously the most common failure class was silent); the daily scheduled sync no longer permanently drops a connection after one transient failure; `task_acks_late`/`task_reject_on_worker_lost` so a worker crash mid-sync doesn't lose the job forever; structured JSON logging with request-id correlation; `GET /health` and `GET /health/ready` endpoints. External alerting/APM deliberately deferred to the Deployment slice below, once a real hosting decision exists to tie it to.
+3. **Performance** — N+1 query audit, sync latency, caching opportunities beyond the existing discovery-feed cache.
+4. **Deployment** — environment variables, backup strategy, CI/CD, rollback plan, and the secret-rotation runbook flagged as missing in [security.md](./security.md).
+
+Beta launch follows this phase, not Account Aggregator or additional-broker work.
+
 ## Phase 3 — AI-Assisted Insight
 
 **Goal:** Help users understand *why* a portfolio looks the way it does, without ever telling them what to do with that understanding.

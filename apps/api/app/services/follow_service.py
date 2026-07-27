@@ -52,17 +52,19 @@ def unfollow(user_id: uuid.UUID, portfolio_id: uuid.UUID) -> None:
     db.session.commit()
 
 
-def list_following(user_id: uuid.UUID) -> list[Portfolio]:
-    """Portfolios the user follows.
+def list_following(user_id: uuid.UUID, page: int, per_page: int) -> tuple[list[Portfolio], int]:
+    """Portfolios the user follows, paginated. Returns (page of results, total count).
 
     Eager-loads the same relationships PortfolioSchema's display_name/
     strategy_tags fields need, to avoid an N+1 across the list (see
     discovery_service.list_investors for the same pattern).
     """
-    return (
-        Portfolio.query.join(Follow, Follow.followed_portfolio_id == Portfolio.id)
-        .filter(Follow.follower_user_id == user_id)
-        .options(
+    query = Portfolio.query.join(Follow, Follow.followed_portfolio_id == Portfolio.id).filter(
+        Follow.follower_user_id == user_id
+    )
+    total = query.count()
+    portfolios = (
+        query.options(
             selectinload(Portfolio.user),
             selectinload(Portfolio.public_investor),
             selectinload(Portfolio.strategy_tags).selectinload(
@@ -70,5 +72,8 @@ def list_following(user_id: uuid.UUID) -> list[Portfolio]:
             ),
         )
         .order_by(Follow.created_at.desc())
+        .offset((page - 1) * per_page)
+        .limit(per_page)
         .all()
     )
+    return portfolios, total
