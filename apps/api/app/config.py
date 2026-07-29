@@ -1,8 +1,17 @@
 """App configuration.
 
 Values are read from environment variables (loaded from .env by python-dotenv
-in create_app). Defaults are intentionally non-functional so a missing .env
-fails loudly rather than silently using insecure placeholders.
+in create_app).
+
+Defaults here are permissive so local development and the test suite work
+without real secrets. They are NOT safe for production — which is exactly why
+app/config_validation.py runs at startup and refuses to boot a production app
+whose security-critical settings are missing, empty, or placeholders
+(ADR-039). An earlier version of this docstring claimed these defaults were
+"intentionally non-functional so a missing .env fails loudly"; they weren't,
+and nothing failed — a production app with JWT_SECRET unset started happily
+and signed tokens with the empty string. Validation is what makes the claim
+true, so don't rely on the defaults below to protect anything.
 """
 
 import os
@@ -12,6 +21,13 @@ class Config:
     # ── Database ──────────────────────────────────────────────────────────────
     SQLALCHEMY_DATABASE_URI: str = os.environ.get("DATABASE_URL", "")
     SQLALCHEMY_TRACK_MODIFICATIONS: bool = False
+
+    # ── Encryption (docs/security.md, ADR-014) ────────────────────────────────
+    # Master secret wrapping the per-record data keys that protect broker
+    # tokens. Surfaced in config (not just read via os.environ inside
+    # encryption_service) so startup validation can check it before any
+    # request runs, rather than discovering it on the first sync.
+    ENCRYPTION_KMS_KEY_ID: str = os.environ.get("ENCRYPTION_KMS_KEY_ID", "")
 
     # ── JWT ───────────────────────────────────────────────────────────────────
     # flask-jwt-extended uses SECRET_KEY as the signing secret by default.
@@ -34,6 +50,18 @@ class Config:
     # ── Celery ────────────────────────────────────────────────────────────────
     CELERY_BROKER_URL: str = REDIS_URL
     CELERY_RESULT_BACKEND: str = REDIS_URL
+
+    # ── Error tracking (ADR-041) ──────────────────────────────────────────────
+    # Unset by default in every environment. app/monitoring.py is a complete
+    # no-op without a DSN, so nothing is sent anywhere until an operator opts
+    # in — local dev and CI never talk to Sentry.
+    SENTRY_DSN: str = os.environ.get("SENTRY_DSN", "")
+    SENTRY_ENVIRONMENT: str = os.environ.get("SENTRY_ENVIRONMENT", "production")
+    # Set by the deploy pipeline (git SHA) so an event points at a build.
+    APP_RELEASE: str = os.environ.get("APP_RELEASE", "")
+    # Performance tracing off by default — errors are the value here; tracing
+    # is a paid-plan concern to enable deliberately, not a silent default.
+    SENTRY_TRACES_SAMPLE_RATE: float = float(os.environ.get("SENTRY_TRACES_SAMPLE_RATE", 0.0))
 
     # ── Rate limiting (ADR-032) ─────────────────────────────────────────────────
     RATELIMIT_STORAGE_URI: str = REDIS_URL

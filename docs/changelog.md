@@ -10,6 +10,28 @@ Nothing pending beyond what's logged below — this section stays as the running
 
 ---
 
+## [2026-07-29] — Phase 2.5, Slice 4: Deployment & Operations
+
+### Security fix
+- **Production refused to fail.** `create_app("production")` with `JWT_SECRET` unset started cleanly and issued JWTs signed with the empty string — forgeable for **any user id**, a complete authentication bypass, with `/health` and `/health/ready` both reporting green. Verified empirically against the real app. `config.py`'s docstring had claimed the opposite ("defaults are intentionally non-functional so a missing .env fails loudly"). New `app/config_validation.py` (ADR-039) now refuses to boot production when `JWT_SECRET`/`ENCRYPTION_KMS_KEY_ID` are missing, empty, placeholders, or under 32 chars, or when `DATABASE_URL`/`REDIS_URL` are unset or localhost. Dev and testing are unaffected.
+
+### Added
+- **CI** (`.github/workflows/ci.yml`, ADR-040) — backend lint/format/migrate/test against real Postgres and Redis service containers; frontend lint/typecheck/test/build. `development-guide.md` has claimed "PRs require passing CI" since Phase 0 with nothing enforcing it.
+- **Deploy** (`.github/workflows/deploy.yml`) — manual, typed-confirmation, migrations run to completion *before* traffic cutover. Never yet executed; the Railway project doesn't exist.
+- **Containerisation** — `apps/api/Dockerfile` + `.dockerignore`, one image for API and worker, gunicorn, non-root, healthcheck.
+- **Sentry** (ADR-041) — completely inert unless `SENTRY_DSN` is set. `send_default_pii=False` plus a scrubber, because request bodies here carry passwords and broker OAuth codes.
+- **Backup/restore** (`scripts/backup_db.sh`, `scripts/restore_db.sh`, ADR-042) — checksummed dumps, restore with row-count verification, and a guard refusing production-looking targets.
+- **`docs/operations.md`** — deploy, rollback, restore drill, secret rotation, monitoring, and the incident-response runbook `security.md` required pre-launch.
+
+### Notes
+- **`ENCRYPTION_KMS_KEY_ID` cannot currently be rotated** (ADR-043). `encryption_service` records no key version, so changing it makes every stored broker token permanently undecryptable and forces all users to reconnect. Blast radius is zero today (no production users) — which is why it's named now rather than found during an incident. Key-versioning is a pre-beta task, tracked in `roadmap.md`, deliberately not done here.
+- The **restore drill was executed for real**, and immediately earned its keep: Alpine's BusyBox `sha256sum` rejects `--check` (GNU-only), so verification failed inside the postgres container. Fixed to `-c`. The script failed *safe*, refusing to restore an unverified dump.
+- The **Dockerfile originally broke graceful shutdown** — shell-form `CMD` left `/bin/sh` as PID 1, so SIGTERM never reached gunicorn and in-flight requests would be killed rather than drained on every deploy. Fixed with `exec`; verified by observing `[1] Shutting down: Master` on `docker stop`.
+- Pre-existing lint/format debt (one unused import, three unformatted files) was cleaned up so CI is green on its first run rather than red on arrival.
+- Container verified end-to-end: refuses to boot unconfigured, serves both health endpoints when configured, shuts down gracefully.
+
+---
+
 ## [2026-07-27] — Phase 2.5, Slice 2: Reliability & Observability
 
 ### Added

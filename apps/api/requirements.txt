@@ -28,6 +28,17 @@ cryptography==43.0.3
 # ─── HTTP client (broker API calls) ───────────────────────────────────────────
 requests==2.32.3
 
+# ─── Production serving (ADR-040) ─────────────────────────────────────────────
+# Flask's built-in server prints "do not use this in production" for good
+# reason — single-threaded, no request limits, not hardened. Gunicorn is what
+# actually serves the app in the container.
+gunicorn==23.0.0
+
+# ─── Error tracking (ADR-041) ─────────────────────────────────────────────────
+# Inert unless SENTRY_DSN is set — see app/monitoring.py. Installing it does
+# not enable it or send anything anywhere.
+sentry-sdk[flask]==2.19.2
+
 # ─── Dev / test / lint ────────────────────────────────────────────────────────
 pytest==8.3.4
 pytest-flask==1.3.0

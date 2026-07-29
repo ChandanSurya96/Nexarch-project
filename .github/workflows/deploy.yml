@@ -1,0 +1,110 @@
+# Production deploy (ADR-040).
+#
+# Backend + worker only. The frontend deploys through Vercel's own Git
+# integration — duplicating it here would create two systems that can
+# disagree about what's live.
+#
+# Ordering is the important part: migrations run to completion BEFORE the new
+# image takes traffic, as development-guide.md specifies. Deploying first and
+# migrating after means the new code runs against the old schema for however
+# long the migration takes.
+#
+# Requires these GitHub repository secrets (set them yourself; nothing here
+# ever contains a secret value):
+#   RAILWAY_TOKEN         - Railway project token
+#   PRODUCTION_DATABASE_URL - used ONLY by the migrate step below
+#
+# This workflow has never been executed — it needs a Railway project that
+# doesn't exist yet. Treat the first run as a change to supervise, not a
+# no-op. See docs/operations.md.
+
+name: Deploy
+
+on:
+  # Deliberately manual for now. Switching to automatic-on-merge is a
+  # deliberate decision to make once there's a staging environment to catch
+  # a bad deploy first — see docs/operations.md "Promoting to automatic
+  # deploys".
+  workflow_dispatch:
+    inputs:
+      confirm:
+        description: 'Type "deploy" to confirm a production deploy'
+        required: true
+
+concurrency:
+  # Never let two deploys overlap — concurrent migrations against one
+  # database is the fastest way to a corrupted schema.
+  group: deploy-production
+  cancel-in-progress: false
+
+jobs:
+  guard:
+    name: Confirm intent
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check confirmation
+        if: ${{ github.event.inputs.confirm != 'deploy' }}
+        run: |
+          echo "Refusing: type 'deploy' to confirm." >&2
+          exit 1
+
+  migrate:
+    name: Run migrations
+    needs: guard
+    runs-on: ubuntu-latest
+    environment: production
+    defaults:
+      run:
+        working-directory: apps/api
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          cache: pip
+          cache-dependency-path: apps/api/requirements.txt
+
+      - run: pip install -r requirements.txt
+
+      - name: Show pending migrations
+        env:
+          DATABASE_URL: ${{ secrets.PRODUCTION_DATABASE_URL }}
+          FLASK_APP: wsgi.py
+        # Logged before applying so the deploy record shows exactly what
+        # schema change went out with which build.
+        run: flask db current && flask db heads
+
+      - name: Apply migrations
+        env:
+          DATABASE_URL: ${{ secrets.PRODUCTION_DATABASE_URL }}
+          FLASK_APP: wsgi.py
+        run: flask db upgrade
+
+  deploy:
+    name: Deploy API + worker
+    needs: migrate
+    runs-on: ubuntu-latest
+    environment: production
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Railway CLI
+        run: npm install -g @railway/cli
+
+      - name: Deploy
+        env:
+          RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
+          # Stamps the build so a Sentry event points at a specific commit
+          # (ADR-041).
+          APP_RELEASE: ${{ github.sha }}
+        run: railway up --service nexarch-api --detach
+
+      - name: Deployment summary
+        run: |
+          echo "### Deployed" >> $GITHUB_STEP_SUMMARY
+          echo "- commit: \`${{ github.sha }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "- migrations: applied before traffic cutover" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "Verify: \`curl https://<api-host>/health/ready\` should return 200." >> $GITHUB_STEP_SUMMARY
+          echo "Rollback: see docs/operations.md — note that rolling back code does NOT roll back a migration." >> $GITHUB_STEP_SUMMARY

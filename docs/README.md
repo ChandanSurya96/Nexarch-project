@@ -45,6 +45,7 @@ Three findings from this round of research changed the plan materially enough th
 | Doc | Purpose |
 |---|---|
 | [decisions.md](./decisions.md) | Architecture Decision Records (ADRs) |
+| [operations.md](./operations.md) | Deploy, rollback, backup/restore, secret rotation, incident response |
 | [changelog.md](./changelog.md) | Chronological log of what changed and when |
 
 ### Product Deep-Dives (`/product`)

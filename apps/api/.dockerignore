@@ -1,0 +1,42 @@
+# Keep the build context small and — more importantly — keep secrets and
+# local state out of the image entirely.
+
+# Secrets. .env must never reach an image; production config comes from the
+# platform's environment, validated at startup by app/config_validation.py.
+.env
+.env.*
+!.env.example
+
+# Local virtualenvs
+.venv/
+venv/
+ENV/
+
+# Python build/cache artifacts
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+
+# Tests and dev-only tooling aren't needed at runtime. CI runs them against
+# the source tree, not the image.
+tests/
+scripts/
+
+# Local databases and dumps — a stray dump in the build context would bake
+# real data into an image layer.
+*.sqlite
+*.sqlite3
+*.db
+*.dump
+*.sql
+
+# Editor/OS noise
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db

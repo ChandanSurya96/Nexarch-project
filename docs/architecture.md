@@ -110,7 +110,9 @@ MVP does not need to be over-engineered for scale it doesn't have yet, but the s
 
 - **Local:** Docker Compose for Postgres + Redis; frontend and backend run natively for fast iteration.
 - **Staging:** mirrors production topology at smaller scale, used for broker-integration testing against sandbox credentials where brokers provide them (Upstox does; not all do — see [broker-integrations.md](./broker-integrations.md)).
-- **Production:** Vercel (frontend), Railway or AWS (backend + workers + Postgres + Redis).
+- **Production:** Vercel (frontend), Railway (backend + workers + Postgres + Redis) — confirmed in ADR-040, which settles the earlier "Railway or AWS" open question. API and sync worker run from one container image (`apps/api/Dockerfile`) differing only in start command, served by gunicorn. **Not yet provisioned** — the deploy pipeline exists and has never been executed. See [operations.md](./operations.md).
+
+Configuration is validated at startup in production (ADR-039): the app refuses to boot if `JWT_SECRET`, `ENCRYPTION_KMS_KEY_ID`, `DATABASE_URL`, or `REDIS_URL` is missing, empty, or a placeholder. Deployment, rollback, backup/restore, secret rotation, and incident response are all documented in [operations.md](./operations.md).
 
 ## Open Architectural Questions
 

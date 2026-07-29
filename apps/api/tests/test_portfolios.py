@@ -157,7 +157,9 @@ class TestGetAnalytics:
         # Milestone 7 — categorize() runs off the same snapshot health_metrics,
         # read-time, so a low-volatility snapshot surfaces the Low-risk match
         # with its explanation, not just the raw tag list.
-        user_id, _ = _register_and_login(client, "analytics-categorized@example.com", "analyticscategorized")
+        user_id, _ = _register_and_login(
+            client, "analytics-categorized@example.com", "analyticscategorized"
+        )
         portfolio = _make_portfolio(user_id, is_public=True)
         snapshot = PortfolioSnapshot(
             portfolio_id=portfolio.id,
@@ -375,7 +377,9 @@ class TestSnapshotOrdering:
     sync can land on the same calendar date), so created_at is what makes
     "latest" and chronological ordering deterministic."""
 
-    def _same_day_snapshots(self, portfolio_id: uuid.UUID) -> tuple[PortfolioSnapshot, PortfolioSnapshot]:
+    def _same_day_snapshots(
+        self, portfolio_id: uuid.UUID
+    ) -> tuple[PortfolioSnapshot, PortfolioSnapshot]:
         same_day = date(2026, 7, 25)
         # The chronologically LATER snapshot is constructed (and added to
         # the session) FIRST, deliberately — this proves the ordering fix
@@ -432,9 +436,7 @@ class TestSnapshotOrdering:
         assert data["health"]["volatility"] == 0.20
 
     def test_history_includes_both_same_day_snapshots_in_creation_order(self, client):
-        user_id, _ = _register_and_login(
-            client, "ordering-history@example.com", "orderinghistory"
-        )
+        user_id, _ = _register_and_login(client, "ordering-history@example.com", "orderinghistory")
         portfolio = _make_portfolio(user_id, is_public=True)
         later, earlier = self._same_day_snapshots(portfolio.id)
         db.session.add_all([later, earlier])
@@ -458,7 +460,9 @@ class TestCompare:
     math covered by test_analytics_service.py) — these tests confirm the
     comparison endpoint wires the two together correctly."""
 
-    def _snapshot(self, portfolio_id, total_value, sector_allocation, holding_count, volatility=None):
+    def _snapshot(
+        self, portfolio_id, total_value, sector_allocation, holding_count, volatility=None
+    ):
         return PortfolioSnapshot(
             portfolio_id=portfolio_id,
             snapshot_date=date(2026, 7, 25),
@@ -494,7 +498,11 @@ class TestCompare:
 
         assert data["diff"]["total_value"] == {"a": 20000.0, "b": 25000.0, "delta": 5000.0}
         assert data["diff"]["health"]["holding_count"] == {"a": 10, "b": 14, "delta": 4}
-        assert data["diff"]["sector_allocation"]["Financials"] == {"a": 1.0, "b": 0.0, "delta": -1.0}
+        assert data["diff"]["sector_allocation"]["Financials"] == {
+            "a": 1.0,
+            "b": 0.0,
+            "delta": -1.0,
+        }
         assert data["diff"]["sector_allocation"]["IT"] == {"a": 0.0, "b": 1.0, "delta": 1.0}
 
     def test_rejects_comparing_a_portfolio_to_itself(self, client):
@@ -506,7 +514,9 @@ class TestCompare:
         assert resp.get_json()["error"]["code"] == "CANNOT_COMPARE_SAME_PORTFOLIO"
 
     def test_private_portfolio_on_either_side_returns_404(self, client):
-        owner_id, _ = _register_and_login(client, "compare-priv-owner@example.com", "compareprivowner")
+        owner_id, _ = _register_and_login(
+            client, "compare-priv-owner@example.com", "compareprivowner"
+        )
         other_id, _ = _register_and_login(client, "compare-pub@example.com", "comparepub")
         private_portfolio = _make_portfolio(owner_id, is_public=False)
         public_portfolio = _make_portfolio(other_id, is_public=True)
@@ -539,7 +549,9 @@ class TestCompare:
         # data point that doesn't exist (see analytics_service's
         # compute_allocation_diff None-side handling).
         synced_user, _ = _register_and_login(client, "compare-synced@example.com", "comparesynced")
-        unsynced_user, _ = _register_and_login(client, "compare-unsynced@example.com", "compareunsynced")
+        unsynced_user, _ = _register_and_login(
+            client, "compare-unsynced@example.com", "compareunsynced"
+        )
         synced_portfolio = _make_portfolio(synced_user, is_public=True)
         unsynced_portfolio = _make_portfolio(unsynced_user, is_public=True)
         db.session.add(self._snapshot(synced_portfolio.id, 20000, {"Financials": 1.0}, 10, 0.15))

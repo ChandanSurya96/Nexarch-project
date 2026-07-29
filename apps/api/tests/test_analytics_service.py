@@ -194,9 +194,7 @@ class TestComputePortfolioVolatility:
         unpriced = self._priced_holding(10, 100)
         varying_closes = [100.0, 102.0, 98.0, 101.0, 97.0] * 5
 
-        result = compute_portfolio_volatility(
-            [priced, unpriced], {priced.id: varying_closes}
-        )
+        result = compute_portfolio_volatility([priced, unpriced], {priced.id: varying_closes})
         solo_volatility = compute_volatility(varying_closes)
 
         # Only the priced holding contributed — the result should match its

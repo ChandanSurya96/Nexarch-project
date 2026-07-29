@@ -37,7 +37,9 @@ This is the highest-sensitivity data Nexarch holds, and it's treated accordingly
 
 - All secrets (DB credentials, JWT signing key, broker API keys/secrets, KMS key references) via environment variables, sourced from Vercel/Railway's secret stores — never committed to git.
 - `.env.example` documents every required variable name with a placeholder, never a real value (see [development-guide.md](./development-guide.md)).
-- **Secret rotation has no written runbook yet** — this doc previously described one as if it existed; it doesn't. There's no production deployment or live cloud secrets manager to rotate against yet, so writing a concrete runbook now would describe a process against infrastructure that doesn't exist. This needs to happen before beta launch, once a real secrets manager is chosen (see [roadmap.md](./roadmap.md) "Deployment" hardening slice) — tracked there, not silently implied as already done here.
+- **Secret rotation now has a written runbook** — see [operations.md](./operations.md) "Secret rotation" (ADR-039 through ADR-043). It covers `JWT_SECRET`, broker API keys, and database credentials with per-secret procedures, because they are not interchangeable.
+- **One rotation is currently a breaking operation, and the runbook says so:** `ENCRYPTION_KMS_KEY_ID` cannot be rotated without making every stored broker access token permanently undecryptable, forcing all users to reconnect. `encryption_service` wraps per-record data keys with this master secret but records no key version, so there is no way to decrypt with an older key. Blast radius is currently zero (no production users), which is why it's named now rather than discovered during an incident. Closing it — key-versioned ciphertext plus a re-encryption pass — is a **pre-beta requirement** (ADR-043).
+- **Production now refuses to start on unsafe configuration** (ADR-039). Previously a deploy with `JWT_SECRET` unset started cleanly and signed JWTs with the empty string — forgeable for any user id, with both health endpoints green. `app/config_validation.py` makes that a hard startup failure.
 
 ## Data Privacy & Compliance (India)
 
