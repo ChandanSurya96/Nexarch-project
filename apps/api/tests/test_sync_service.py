@@ -104,6 +104,31 @@ def mock_discovery_cache(monkeypatch):
     monkeypatch.setattr("app.services.sync_service.invalidate_discovery_cache", MagicMock())
 
 
+@pytest.fixture(autouse=True)
+def isolated_price_cache(monkeypatch):
+    """Per-test in-memory stand-in for the historical-price cache (ADR-037).
+
+    Without this the cache is a *real*, shared Redis instance that outlives
+    each test, so one test's fetched prices leak into the next — and since
+    these tests deliberately reuse the same ISINs with differently-configured
+    fake adapters (one returning prices, one raising), a leaked entry silently
+    changes what the next test exercises. Faked per test, matching how
+    test_discovery.py/test_broker_connections.py already fake Redis.
+    """
+    store: dict[str, list[float]] = {}
+
+    def _get(isin, exchange, from_date, to_date):
+        return store.get(f"{isin}:{exchange}:{from_date}:{to_date}")
+
+    def _set(isin, exchange, from_date, to_date, closes, ttl_seconds=None):
+        if closes:
+            store[f"{isin}:{exchange}:{from_date}:{to_date}"] = closes
+
+    monkeypatch.setattr("app.services.sync_service.price_cache_service.get_closes", _get)
+    monkeypatch.setattr("app.services.sync_service.price_cache_service.set_closes", _set)
+    return store
+
+
 class TestRunSync:
     def test_creates_portfolio_and_holdings_on_first_sync(self, monkeypatch):
         connection = _make_connection("sync-basic@example.com")
@@ -279,6 +304,106 @@ class TestRunSyncFailureBranches:
         assert events[0].event_metadata["reason"] == "unexpected_error"
 
 
+class TestHistoricalPriceFetching:
+    """ADR-037 — dedup + cache + bounded parallelism around the per-instrument
+    price fetch, without changing what run_sync produces."""
+
+    def test_duplicate_instruments_are_fetched_once(self, monkeypatch):
+        """Two holdings of the same ISIN must cost one broker call, not two."""
+        connection = _make_connection("sync-dedup@example.com")
+        calls: list[str] = []
+
+        class _CountingAdapter(_FakeAdapter):
+            def fetch_holdings(self, access_token):
+                # Same instrument twice — a real portfolio can hold one ISIN
+                # across multiple rows, and every portfolio in the system
+                # holding it would otherwise refetch it independently.
+                return [
+                    RawHolding(
+                        symbol="RELIANCE",
+                        isin="INE002A01018",
+                        exchange="NSE",
+                        quantity=10.0,
+                        avg_cost_price=2500.0,
+                    ),
+                    RawHolding(
+                        symbol="RELIANCE",
+                        isin="INE002A01018",
+                        exchange="NSE",
+                        quantity=5.0,
+                        avg_cost_price=2400.0,
+                    ),
+                ]
+
+            def fetch_historical_prices(self, access_token, isin, exchange, from_date, to_date):
+                calls.append(isin)
+                return super().fetch_historical_prices(
+                    access_token, isin, exchange, from_date, to_date
+                )
+
+        adapter = _CountingAdapter(historical_prices_by_isin={"INE002A01018": _VARYING_CLOSES})
+        monkeypatch.setattr("app.services.sync_service.get_adapter", lambda name: adapter)
+
+        run_sync(str(connection.id))
+
+        assert calls == ["INE002A01018"]
+
+    def test_cached_instrument_is_not_refetched(self, monkeypatch, isolated_price_cache):
+        connection = _make_connection("sync-cache-hit@example.com")
+        calls: list[str] = []
+
+        class _CountingAdapter(_FakeAdapter):
+            def fetch_historical_prices(self, access_token, isin, exchange, from_date, to_date):
+                calls.append(isin)
+                return super().fetch_historical_prices(
+                    access_token, isin, exchange, from_date, to_date
+                )
+
+        adapter = _CountingAdapter(
+            historical_prices_by_isin={
+                "INE002A01018": _VARYING_CLOSES,
+                "INE467B01029": _VARYING_CLOSES,
+            }
+        )
+        monkeypatch.setattr("app.services.sync_service.get_adapter", lambda name: adapter)
+
+        run_sync(str(connection.id))
+        first_pass = len(calls)
+        assert first_pass == 2  # one per distinct instrument
+
+        # Second sync within the TTL: prices are immutable for a past window,
+        # so this must hit the cache and make zero further broker calls.
+        run_sync(str(connection.id))
+        assert len(calls) == first_pass
+
+    def test_empty_price_results_are_not_cached(self, monkeypatch, isolated_price_cache):
+        """A dataless/transient-empty response must not be remembered — see
+        price_cache_service.set_closes for why that's the cheaper mistake."""
+        connection = _make_connection("sync-empty-not-cached@example.com")
+        adapter = _FakeAdapter()  # returns [] for every instrument
+        monkeypatch.setattr("app.services.sync_service.get_adapter", lambda name: adapter)
+
+        run_sync(str(connection.id))
+
+        assert isolated_price_cache == {}
+
+    def test_one_instrument_failing_still_isolates(self, monkeypatch):
+        """ADR-034's per-instrument isolation must survive parallelism: one
+        instrument raising doesn't fail the sync or lose the others."""
+        connection = _make_connection("sync-parallel-isolation@example.com")
+        adapter = _FakeAdapter(
+            historical_prices_by_isin={"INE467B01029": _VARYING_CLOSES},
+            raise_for_isin={"INE002A01018"},
+        )
+        monkeypatch.setattr("app.services.sync_service.get_adapter", lambda name: adapter)
+
+        run_sync(str(connection.id))  # must not raise
+
+        portfolio = Portfolio.query.filter_by(user_id=connection.user_id).first()
+        snapshot = PortfolioSnapshot.query.filter_by(portfolio_id=portfolio.id).first()
+        assert snapshot.health_metrics["volatility"] is not None
+
+
 class TestStrategyTagging:
     """Milestone 7, ADR-028 — strategy tags recomputed alongside health
     metrics every sync."""
@@ -331,7 +456,9 @@ class TestStrategyTagging:
         portfolio = Portfolio.query.filter_by(user_id=connection.user_id).first()
         assert "momentum" in self._tag_slugs(portfolio.id)
 
-    def test_second_sync_replaces_tags_rather_than_accumulating(self, monkeypatch):
+    def test_second_sync_replaces_tags_rather_than_accumulating(
+        self, monkeypatch, isolated_price_cache
+    ):
         connection = _make_connection("sync-tag-replace@example.com")
         low_risk_adapter = _FakeAdapter(
             historical_prices_by_isin={
@@ -348,6 +475,13 @@ class TestStrategyTagging:
         # Re-sync with no price history at all -> volatility/momentum both
         # None -> no tags should match anymore, and the old "low-risk" row
         # must be gone, not left behind alongside nothing new.
+        #
+        # The price cache is cleared first (ADR-037) to simulate a later sync
+        # past the cache TTL. Without that, the second sync would legitimately
+        # reuse the first sync's cached closes and still compute volatility —
+        # correct caching behaviour, but it would stop this test from
+        # exercising what it's actually about (tag replacement).
+        isolated_price_cache.clear()
         no_price_adapter = _FakeAdapter()
         monkeypatch.setattr("app.services.sync_service.get_adapter", lambda name: no_price_adapter)
         run_sync(str(connection.id))

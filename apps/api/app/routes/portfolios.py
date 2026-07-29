@@ -30,6 +30,7 @@ from flask import Blueprint, request
 from flask_jwt_extended import get_jwt_identity, jwt_required
 from marshmallow import ValidationError
 
+from app.schemas.pagination import OptionalPaginationQuerySchema
 from app.schemas.portfolio import CompareQuerySchema, PortfolioSchema, PortfolioUpdateSchema
 from app.services import portfolio_comparison_service, portfolio_profile_service
 from app.services.follow_service import follow, unfollow
@@ -41,6 +42,7 @@ portfolios_bp = Blueprint("portfolios", __name__)
 _portfolio_schema = PortfolioSchema()
 _update_schema = PortfolioUpdateSchema()
 _compare_query_schema = CompareQuerySchema()
+_optional_pagination_schema = OptionalPaginationQuerySchema()
 
 
 def _current_user_id() -> uuid.UUID | None:
@@ -83,20 +85,38 @@ def get_analytics(portfolio_id: uuid.UUID):
 @jwt_required(optional=True)
 def get_portfolio_activity(portfolio_id: uuid.UUID):
     try:
-        return success(
-            portfolio_profile_service.get_activity_view(portfolio_id, _current_user_id())
+        params = _optional_pagination_schema.load(request.args.to_dict())
+    except ValidationError as exc:
+        return error("VALIDATION_ERROR", str(exc.messages), 400)
+
+    try:
+        entries, pagination = portfolio_profile_service.get_activity_view(
+            portfolio_id, _current_user_id(), params["page"], params["per_page"]
         )
     except PortfolioAccessError as exc:
         return error(exc.code, exc.message, exc.status)
+
+    # meta stays empty unless pagination was explicitly requested (ADR-038),
+    # so the default response shape is unchanged for existing clients.
+    return success(entries, meta={"pagination": pagination} if pagination else None)
 
 
 @portfolios_bp.get("/<uuid:portfolio_id>/history")
 @jwt_required(optional=True)
 def get_portfolio_history(portfolio_id: uuid.UUID):
     try:
-        return success(portfolio_profile_service.get_history_view(portfolio_id, _current_user_id()))
+        params = _optional_pagination_schema.load(request.args.to_dict())
+    except ValidationError as exc:
+        return error("VALIDATION_ERROR", str(exc.messages), 400)
+
+    try:
+        entries, pagination = portfolio_profile_service.get_history_view(
+            portfolio_id, _current_user_id(), params["page"], params["per_page"]
+        )
     except PortfolioAccessError as exc:
         return error(exc.code, exc.message, exc.status)
+
+    return success(entries, meta={"pagination": pagination} if pagination else None)
 
 
 @portfolios_bp.get("/<uuid:portfolio_id>/profile")

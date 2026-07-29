@@ -72,7 +72,7 @@ def _build_analytics_view(portfolio_id: uuid.UUID, portfolio: Portfolio) -> dict
 
 
 def get_detail(portfolio_id: uuid.UUID, requesting_user_id: uuid.UUID | None) -> dict:
-    portfolio = get_visible_portfolio(portfolio_id, requesting_user_id)
+    portfolio = get_visible_portfolio(portfolio_id, requesting_user_id, for_serialization=True)
     return _portfolio_schema.dump(portfolio)
 
 
@@ -86,15 +86,49 @@ def get_analytics_view(portfolio_id: uuid.UUID, requesting_user_id: uuid.UUID | 
     return _analytics_schema.dump(_build_analytics_view(portfolio_id, portfolio))
 
 
-def get_activity_view(portfolio_id: uuid.UUID, requesting_user_id: uuid.UUID | None) -> list[dict]:
+def _paginate(rows: list, page: int | None, per_page: int | None) -> tuple[list, dict | None]:
+    """Slice rows when pagination was requested; pass them through untouched
+    when it wasn't (ADR-038).
+
+    Returns (rows, pagination_meta). pagination_meta is None for the
+    un-paginated case, which is what keeps these endpoints' default response
+    identical to what they returned before pagination existed.
+    """
+    if page is None and per_page is None:
+        return rows, None
+
+    page = page or 1
+    per_page = per_page or 20
+    total = len(rows)
+    total_pages = (total + per_page - 1) // per_page if total else 0
+    start = (page - 1) * per_page
+    return rows[start : start + per_page], {
+        "page": page,
+        "per_page": per_page,
+        "total": total,
+        "total_pages": total_pages,
+    }
+
+
+def get_activity_view(
+    portfolio_id: uuid.UUID,
+    requesting_user_id: uuid.UUID | None,
+    page: int | None = None,
+    per_page: int | None = None,
+) -> tuple[list[dict], dict | None]:
     get_visible_portfolio(portfolio_id, requesting_user_id)  # raises if not visible
-    return get_activity(portfolio_id)
+    return _paginate(get_activity(portfolio_id), page, per_page)
 
 
-def get_history_view(portfolio_id: uuid.UUID, requesting_user_id: uuid.UUID | None) -> list[dict]:
+def get_history_view(
+    portfolio_id: uuid.UUID,
+    requesting_user_id: uuid.UUID | None,
+    page: int | None = None,
+    per_page: int | None = None,
+) -> tuple[list[dict], dict | None]:
     get_visible_portfolio(portfolio_id, requesting_user_id)  # raises if not visible
     snapshots = get_snapshot_history(portfolio_id)
-    return _history_entry_schema.dump(snapshots, many=True)
+    return _paginate(_history_entry_schema.dump(snapshots, many=True), page, per_page)
 
 
 def get_complete_profile(portfolio_id: uuid.UUID, requesting_user_id: uuid.UUID | None) -> dict:
@@ -105,7 +139,7 @@ def get_complete_profile(portfolio_id: uuid.UUID, requesting_user_id: uuid.UUID 
     partial-data use cases; this is a convenience for a single profile-page
     fetch, not a replacement.
     """
-    portfolio = get_visible_portfolio(portfolio_id, requesting_user_id)
+    portfolio = get_visible_portfolio(portfolio_id, requesting_user_id, for_serialization=True)
     return {
         "portfolio": _portfolio_schema.dump(portfolio),
         "holdings": _holding_schema.dump(portfolio.holdings, many=True),

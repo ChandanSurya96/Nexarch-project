@@ -73,11 +73,23 @@ class PortfolioSchema(Schema):
 class DiscoveryInvestorSchema(PortfolioSchema):
     """The discovery feed's list-item shape — everything PortfolioSchema
     has, plus the latest health snapshot. Kept as a subclass (not a
-    parallel, independently-maintained dict) so the two views can't drift."""
+    parallel, independently-maintained dict) so the two views can't drift.
+
+    Pass pre-resolved snapshots as `context["latest_snapshots"]`
+    ({portfolio_id: PortfolioSnapshot}, from
+    portfolio_service.get_latest_snapshots_for) when serializing a page of
+    portfolios — that's one query for the whole page instead of one per row
+    (ADR-036). Without it this falls back to a per-portfolio lookup, which is
+    correct but only appropriate for a single portfolio.
+    """
 
     health = fields.Method("get_health")
 
     def get_health(self, portfolio) -> dict | None:
+        latest_snapshots = self.context.get("latest_snapshots")
+        if latest_snapshots is not None:
+            snapshot = latest_snapshots.get(portfolio.id)
+            return snapshot.health_metrics if snapshot is not None else None
         return portfolio_service.resolve_latest_health(portfolio)
 
 

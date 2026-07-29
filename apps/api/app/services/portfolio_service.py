@@ -9,10 +9,15 @@ posture as auth_service's unified INVALID_CREDENTIALS — see docs/security.md).
 from __future__ import annotations
 
 import uuid
+from collections.abc import Sequence
+
+from sqlalchemy import func
+from sqlalchemy.orm import aliased, selectinload
 
 from app.extensions import db
 from app.models.portfolio import Portfolio
 from app.models.portfolio_snapshot import PortfolioSnapshot
+from app.models.strategy_category import PortfolioStrategyTag
 
 
 class PortfolioAccessError(Exception):
@@ -24,15 +29,39 @@ class PortfolioAccessError(Exception):
 
 
 def get_visible_portfolio(
-    portfolio_id: uuid.UUID, requesting_user_id: uuid.UUID | None
+    portfolio_id: uuid.UUID,
+    requesting_user_id: uuid.UUID | None,
+    *,
+    for_serialization: bool = False,
 ) -> Portfolio:
     """Return a portfolio if it's public or owned by the requester.
 
     Raises PORTFOLIO_NOT_FOUND (404) otherwise — deliberately the same error
     for "doesn't exist" and "exists but private," so a private portfolio's
     existence isn't leaked to a non-owner.
+
+    for_serialization (ADR-036): eager-load exactly what PortfolioSchema
+    reads — owner/public_investor for display_name, tags->category for
+    strategy_tags — so dumping a portfolio doesn't fire a lazy load per
+    relationship. Opt-in on purpose: most callers here (history, activity,
+    analytics) fetch a portfolio only to enforce visibility and never
+    serialize it, so eager-loading unconditionally just adds queries those
+    paths pay for and throw away — measured at +3 queries on
+    GET /:id/history alone. Snapshots and holdings are never eager-loaded
+    here regardless; that's the over-fetching this slice exists to remove.
     """
-    portfolio = db.session.get(Portfolio, portfolio_id)
+    options = (
+        (
+            selectinload(Portfolio.user),
+            selectinload(Portfolio.public_investor),
+            selectinload(Portfolio.strategy_tags).selectinload(
+                PortfolioStrategyTag.strategy_category
+            ),
+        )
+        if for_serialization
+        else ()
+    )
+    portfolio = db.session.get(Portfolio, portfolio_id, options=options)
     is_owner = (
         portfolio is not None
         and requesting_user_id is not None
@@ -78,6 +107,55 @@ def get_latest_snapshot(portfolio_id: uuid.UUID) -> PortfolioSnapshot | None:
     )
 
 
+def get_latest_snapshots_for(
+    portfolio_ids: Sequence[uuid.UUID],
+) -> dict[uuid.UUID, PortfolioSnapshot]:
+    """The latest snapshot for each of many portfolios, in ONE query (ADR-036).
+
+    Exists because the discovery feed needs "latest health" for a whole page
+    of portfolios. Loading `portfolio.snapshots` per portfolio and picking the
+    newest in Python meant materializing the entire snapshot history of every
+    portfolio on the page — measured at 7,300 ORM objects for a 20-item page
+    with a year of daily syncs, ~95% of that request's wall time, and growing
+    forever. This returns exactly one row per portfolio instead.
+
+    Ordering matches get_latest_snapshot() exactly — (snapshot_date,
+    created_at) descending — so "latest" means the same thing here as it does
+    everywhere else (ADR-025).
+
+    Uses ROW_NUMBER() rather than Postgres's DISTINCT ON deliberately: SQLAlchemy
+    *silently ignores* DISTINCT ON on SQLite (the test backend), which would have
+    returned every snapshot instead of one per portfolio — and since the rows come
+    back newest-first, naively keying them into a dict would have kept the OLDEST
+    row per portfolio. That fails silently and only in tests, i.e. the worst
+    possible way. ROW_NUMBER is supported by both backends, so prod and tests run
+    the same logic.
+    """
+    if not portfolio_ids:
+        return {}
+
+    ranked = (
+        db.session.query(
+            PortfolioSnapshot,
+            func.row_number()
+            .over(
+                partition_by=PortfolioSnapshot.portfolio_id,
+                order_by=(
+                    PortfolioSnapshot.snapshot_date.desc(),
+                    PortfolioSnapshot.created_at.desc(),
+                ),
+            )
+            .label("rank"),
+        )
+        .filter(PortfolioSnapshot.portfolio_id.in_(portfolio_ids))
+        .subquery()
+    )
+
+    snapshot_alias = aliased(PortfolioSnapshot, ranked)
+    rows = db.session.query(snapshot_alias).filter(ranked.c.rank == 1).all()
+    return {row.portfolio_id: row for row in rows}
+
+
 def get_snapshot_history(portfolio_id: uuid.UUID) -> list[PortfolioSnapshot]:
     """Oldest-to-newest snapshot history — powers GET /portfolios/:id/history,
     documented since Phase 0 but not built until Milestone 5. Raw data (every
@@ -113,8 +191,20 @@ def resolve_strategy_tag_slugs(portfolio: Portfolio) -> list[str]:
 
 def resolve_latest_health(portfolio: Portfolio) -> dict | None:
     """The most recent snapshot's health_metrics, or None if nothing has
-    synced yet — honestly absent, not a fabricated default."""
-    if not portfolio.snapshots:
-        return None
-    latest = max(portfolio.snapshots, key=lambda s: s.snapshot_date)
-    return latest.health_metrics
+    synced yet — honestly absent, not a fabricated default.
+
+    Callers serializing many portfolios at once (the discovery feed) should
+    pass pre-resolved snapshots via DiscoveryInvestorSchema's context instead
+    of relying on this fallback — see get_latest_snapshots_for(). This path
+    issues one query for a single portfolio.
+
+    Previously this did `max(portfolio.snapshots, key=snapshot_date)`, which
+    was wrong twice over: it loaded the portfolio's whole snapshot history to
+    pick one row, and it ignored `created_at`, so for two snapshots sharing a
+    calendar date it could pick a *different* one than get_latest_snapshot()
+    does — meaning the discovery feed and the analytics endpoint could report
+    different health for the same portfolio, nondeterministically (ADR-025
+    exists precisely to prevent that).
+    """
+    snapshot = get_latest_snapshot(portfolio.id)
+    return snapshot.health_metrics if snapshot is not None else None

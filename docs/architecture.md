@@ -96,7 +96,10 @@ Neither write is a true upsert: Holdings and strategy-category tags are deleted 
 ## Caching Strategy
 
 - Computed portfolio-health metrics (diversification, concentration) are cached in Redis and recomputed on sync, not on every page load.
-- Discovery feed queries (filtered/sorted investor lists) are cached with a short TTL, invalidated on new sync completion for affected portfolios.
+- Discovery feed queries (filtered/sorted investor lists) are cached with a short TTL, invalidated on new sync completion for affected portfolios. Only the first few pages are cached — the cache key embeds `page`, which is caller-controlled, so caching every page would let a crawler mint unbounded Redis keys (ADR-038).
+- Broker historical price series are cached in Redis, keyed by (instrument, exchange, date range), with a 24-hour TTL (ADR-037). Daily closes for a past window are immutable, so this is safe, and it collapses what used to be one broker call per holding per portfolio per sync into one call per instrument per TTL. Only market data is cached — never holdings or anything user-specific.
+
+**Reading "latest" from an append-only table.** `portfolio_snapshots` grows by one row per sync forever, so anything that wants the *current* state of many portfolios at once (the discovery feed) must ask the database for the latest row per portfolio rather than loading the collection and picking in Python. That's a single ranked query (`ROW_NUMBER() OVER (PARTITION BY portfolio_id ...)`), not an ORM relationship load — see ADR-036 for the measured reason this matters, and `scripts/benchmark_endpoints.py` for the harness that catches it regressing.
 - Session/rate-limit counters live in Redis.
 
 ## Scalability Plan
