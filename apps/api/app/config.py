@@ -28,6 +28,15 @@ class Config:
     # encryption_service) so startup validation can check it before any
     # request runs, rather than discovering it on the first sync.
     ENCRYPTION_KMS_KEY_ID: str = os.environ.get("ENCRYPTION_KMS_KEY_ID", "")
+    # Multi-key form used during a rotation: "1:<secret>,2:<secret>" (ADR-044).
+    # Optional — with only ENCRYPTION_KMS_KEY_ID set, that key is version 1 and
+    # is active, which is exactly the pre-ADR-044 behaviour. encryption_service
+    # reads these from os.environ directly (it runs in worker threads with no
+    # app context); they are mirrored here so startup validation can see them.
+    ENCRYPTION_KEYS: str = os.environ.get("ENCRYPTION_KEYS", "")
+    # Which version new tokens are wrapped with. Defaults to the highest
+    # configured version when unset.
+    ENCRYPTION_ACTIVE_KEY_VERSION: str = os.environ.get("ENCRYPTION_ACTIVE_KEY_VERSION", "")
 
     # ── JWT ───────────────────────────────────────────────────────────────────
     # flask-jwt-extended uses SECRET_KEY as the signing secret by default.

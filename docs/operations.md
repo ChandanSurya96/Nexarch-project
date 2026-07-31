@@ -28,7 +28,9 @@ Set in Railway (API + worker + beat all need these). Values come from your secre
 | `DATABASE_URL` | **yes** | Railway provides it |
 | `REDIS_URL` | **yes** | Railway provides it; must not be localhost in production |
 | `JWT_SECRET` | **yes** | ≥32 chars. `python -c "import secrets; print(secrets.token_urlsafe(48))"` |
-| `ENCRYPTION_KMS_KEY_ID` | **yes** | ≥32 chars. **See the rotation warning below — this one is special.** |
+| `ENCRYPTION_KMS_KEY_ID` | **yes** | ≥32 chars. Key version 1. See "Rotating `ENCRYPTION_KMS_KEY_ID`" below. |
+| `ENCRYPTION_KEYS` | no | Multi-key form for rotations only: `1:<secret>,2:<secret>` (ADR-044). |
+| `ENCRYPTION_ACTIVE_KEY_VERSION` | no | Which key new tokens use. Defaults to the highest configured. |
 | `FLASK_ENV` | **yes** | `production` |
 | `UPSTOX_API_KEY` / `_SECRET` / `_REDIRECT_URI` | yes | From the Upstox developer console |
 | `SENTRY_DSN` | optional | Unset = error tracking silently off (ADR-041) |
@@ -111,17 +113,56 @@ Rotating invalidates every access and refresh token immediately. All users must 
 
 Do it during low traffic, and expect a support spike, not an incident.
 
-### `ENCRYPTION_KMS_KEY_ID` — **cannot currently be rotated without breaking every broker connection**
+### `ENCRYPTION_KMS_KEY_ID` — rotate with zero user reconnects (ADR-044)
 
-This is a known limitation, documented rather than discovered during an incident (ADR-043).
+> This section previously said this key **could not** be rotated without breaking every broker connection (ADR-043). That gap is now closed. Stored tokens name the key version that wrapped them, several keys can be configured at once, and `scripts/rewrap_encryption_keys.py` moves rows onto a new key without ever decrypting the token itself.
 
-`encryption_service` wraps a per-record data key with this master secret, but stored ciphertext carries **no key-version marker**, and the code has no way to try an old key. Change this value and **every stored broker access token becomes permanently undecryptable** — every user's broker connection breaks and each must reconnect. There is no recovery path, because there's nothing recorded that says which key encrypted which row.
+**Never skip step 4.** Retiring a key while rows still reference it is the one irreversible mistake here — those data keys become unrecoverable and the affected users must reconnect their brokers.
 
-Right now the blast radius is zero: there are no production users. That is exactly why this needs fixing *before* beta, not after.
+**1. Check the starting state.**
 
-To make rotation possible, `encryption_service` needs key-versioning: prefix stored ciphertext with a key id, keep the previous key available during a transition, decrypt with whichever key the row names, and re-encrypt rows to the new key in a background pass. That's tracked as a pre-beta task, not done here.
+```bash
+apps/api/venv/bin/python scripts/rewrap_encryption_keys.py --status
+```
 
-**Until then:** if this secret is ever exposed, the honest response is to rotate it *and* accept that all users must reconnect their brokers — and to say so plainly to them.
+Every version listed must read `active` or `readable, awaiting re-wrap`. If anything says `UNREADABLE`, stop and fix the configuration first — the command also exits non-zero. It verifies by actually unwrapping a data key, not by checking whether a version appears in config, so "the key is set" and "the key is correct" are not confused.
+
+**2. Add the new key alongside the old one, and make it active.**
+
+```
+ENCRYPTION_KEYS=1:<old secret>,2:<new secret>
+ENCRYPTION_ACTIVE_KEY_VERSION=2
+```
+
+Set both in Railway and redeploy. From this moment new tokens are wrapped with version 2 while existing ones still decrypt with version 1 — no user is affected, and this state is safe to sit in indefinitely.
+
+**3. Re-wrap the existing rows.**
+
+```bash
+apps/api/venv/bin/python scripts/rewrap_encryption_keys.py --dry-run
+apps/api/venv/bin/python scripts/rewrap_encryption_keys.py --apply
+```
+
+Safe to re-run; a crash partway leaves a mix of key versions, which the application reads normally. Only each row's small data key is re-wrapped — the token ciphertext is copied byte-for-byte, so no plaintext broker token is ever held in memory.
+
+**4. Confirm, then retire the old key.**
+
+```bash
+apps/api/venv/bin/python scripts/rewrap_encryption_keys.py --status
+```
+
+Only when it reports `0 token(s) not yet on the active key` and no `UNREADABLE` rows, drop version 1:
+
+```
+ENCRYPTION_KEYS=2:<new secret>
+ENCRYPTION_ACTIVE_KEY_VERSION=2
+```
+
+**Rollback.** Before step 4, rollback is free: set `ENCRYPTION_ACTIVE_KEY_VERSION=1` and re-run `--apply` to move rows back. Both keys stay configured, so nothing is unreadable at any point. After step 4 there is no rollback — which is why step 4 is gated on step 1's check.
+
+**If this secret is exposed**, rotate it with the procedure above. Users are unaffected and need not be asked to reconnect; treat it as a credential-rotation incident, not a user-facing breakage.
+
+**On restore:** a database restored into an environment configured with different keys still can't be read — see `restore_db.sh`'s warning. Restore the key configuration alongside the data.
 
 ### Broker API keys (`UPSTOX_API_KEY` / `_SECRET`)
 
@@ -155,7 +196,7 @@ Built (ADR-034, ADR-041):
 `security.md` requires this before real broker tokens are stored in production.
 
 1. **Assess.** User-facing? Data exposed? Check `/health/ready`, Sentry, Railway logs, and `audit_logs`.
-2. **Contain.** For a suspected credential compromise, rotate the affected secret *first* (see above — and read the `ENCRYPTION_KMS_KEY_ID` warning before touching that one). For a bad deploy, roll back.
+2. **Contain.** For a suspected credential compromise, rotate the affected secret *first* (see above; `ENCRYPTION_KMS_KEY_ID` has its own multi-step procedure). For a bad deploy, roll back.
 3. **Communicate.** For anything touching user data, tell affected users plainly what happened and what you did. India's DPDP Act carries breach-notification obligations — see [security.md](./security.md).
 4. **Record.** Timeline, impact, root cause, fix, prevention.
 5. **Follow up.** Turn the prevention item into a real task, not a good intention.
@@ -168,6 +209,6 @@ Deploy is manual today because there's no staging environment. Before switching 
 
 1. A staging environment mirroring production, deployed automatically from `main`.
 2. Smoke tests running against staging post-deploy.
-3. The `ENCRYPTION_KMS_KEY_ID` rotation gap closed.
+3. ~~The `ENCRYPTION_KMS_KEY_ID` rotation gap closed.~~ Done — ADR-044.
 4. At least one rehearsed rollback.
 5. Alerting live and verified — someone actually receives an alert.
