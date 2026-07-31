@@ -12,7 +12,7 @@ strategy_categories is a join table, not a single strategy column."
 import uuid
 from datetime import UTC, datetime
 
-from sqlalchemy import ForeignKey, String, Text, Uuid, func
+from sqlalchemy import ForeignKey, Index, String, Text, Uuid, func
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.extensions import db
@@ -32,6 +32,14 @@ class StrategyCategory(db.Model):
 
 class PortfolioStrategyTag(db.Model):
     __tablename__ = "portfolio_strategy_tags"
+    __table_args__ = (
+        # The composite PK below covers portfolio_id-keyed lookups (leftmost
+        # prefix), but the discovery feed's strategy filter goes the other
+        # way — slug -> strategy_category_id -> "which portfolios have this
+        # tag" — where strategy_category_id is the PK's trailing column and
+        # so unusable as an access path. See ADR-035 / migration 0007.
+        Index("ix_portfolio_strategy_tags_category", "strategy_category_id"),
+    )
 
     portfolio_id: Mapped[uuid.UUID] = mapped_column(
         Uuid(as_uuid=True),

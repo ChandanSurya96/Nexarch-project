@@ -26,13 +26,19 @@ from app.models.public_investor import PublicInvestor
 from app.models.strategy_category import PortfolioStrategyTag, StrategyCategory
 from app.models.user import User
 from app.schemas.portfolio import DiscoveryInvestorSchema
+from app.services.portfolio_service import get_latest_snapshots_for
 
 _CACHE_TTL_SECONDS = 60
 _CACHE_KEY_PREFIX = "discovery:investors:"
+# Only the first few pages are cached (ADR-038). The cache key includes
+# `page`, which is caller-controlled and unbounded, so caching every page
+# lets a crawler mint unlimited Redis keys — each held for the TTL — purely
+# by walking ?page=1..N. Real traffic overwhelmingly hits the first pages;
+# deep pages fall through to the database, which is correct behaviour, just
+# uncached. per_page is already bounded to 100 by the schema.
+_MAX_CACHEABLE_PAGE = 5
 
 _SORT_OPTIONS = {"recency", "portfolio_age", "alphabetical"}
-
-_investor_schema = DiscoveryInvestorSchema()
 
 
 def list_investors(
@@ -43,12 +49,14 @@ def list_investors(
     sort: one of "recency" | "portfolio_age" | "alphabetical" (default "recency").
     """
     sort = sort if sort in _SORT_OPTIONS else "recency"
+    is_cacheable = page <= _MAX_CACHEABLE_PAGE
     cache_key = f"{_CACHE_KEY_PREFIX}{strategy_slug}:{sort}:{page}:{per_page}"
 
-    cached = redis_client.get(cache_key)
-    if cached is not None:
-        results, total = json.loads(cached)
-        return results, total
+    if is_cacheable:
+        cached = redis_client.get(cache_key)
+        if cached is not None:
+            results, total = json.loads(cached)
+            return results, total
 
     query = Portfolio.query.filter(Portfolio.is_public.is_(True))
 
@@ -72,10 +80,15 @@ def list_investors(
     # alphabetical sort's joins are irrelevant to a row count.
     total = query.with_entities(Portfolio.id).count()
 
+    # Deliberately NOT eager-loading Portfolio.snapshots (ADR-036): the only
+    # thing this feed needs from snapshots is each portfolio's *latest*
+    # health_metrics, and loading the collection to get it meant
+    # materializing every snapshot ever taken for every portfolio on the page
+    # — 7,300 ORM objects for a 20-item page at one year of daily syncs, and
+    # unbounded growth after that. Fetched below in one query instead.
     query = query.options(
         selectinload(Portfolio.user),
         selectinload(Portfolio.public_investor),
-        selectinload(Portfolio.snapshots),
         selectinload(Portfolio.strategy_tags).selectinload(PortfolioStrategyTag.strategy_category),
     )
 
@@ -92,8 +105,17 @@ def list_investors(
 
     portfolios = query.offset((page - 1) * per_page).limit(per_page).all()
 
-    results = _investor_schema.dump(portfolios, many=True)
-    redis_client.set(cache_key, json.dumps((results, total)), ex=_CACHE_TTL_SECONDS)
+    # One query for the whole page's latest snapshots, handed to the schema
+    # via context (ADR-036) — replaces per-portfolio collection loading.
+    # Instantiated per call rather than mutating a module-level schema's
+    # .context: that instance would be shared across concurrent requests, so
+    # assigning to it is a race (one request's snapshots serialized into
+    # another's response).
+    latest_snapshots = get_latest_snapshots_for([p.id for p in portfolios])
+    investor_schema = DiscoveryInvestorSchema(context={"latest_snapshots": latest_snapshots})
+    results = investor_schema.dump(portfolios, many=True)
+    if is_cacheable:
+        redis_client.set(cache_key, json.dumps((results, total)), ex=_CACHE_TTL_SECONDS)
     return results, total
 
 

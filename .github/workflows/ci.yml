@@ -100,7 +100,16 @@ jobs:
         working-directory: apps/web
 
     steps:
+      # apps/web is a git submodule (ChandanSurya96/nexarch-web). checkout
+      # does not fetch submodules by default, so without this the directory
+      # is empty and every step below fails — the first failure being
+      # setup-node's cache lookup, with the fairly opaque "Some specified
+      # paths were not resolved". The submodule repo is public, so the
+      # default GITHUB_TOKEN is enough; making it private would require a
+      # PAT in `token:` here.
       - uses: actions/checkout@v4
+        with:
+          submodules: recursive
 
       - uses: actions/setup-node@v4
         with:

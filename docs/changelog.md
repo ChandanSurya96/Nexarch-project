@@ -32,6 +32,33 @@ Nothing pending beyond what's logged below — this section stays as the running
 
 ---
 
+## [2026-07-27] — Phase 2.5, Slice 3: Performance & Database Hardening
+
+No user-facing feature changes and no intended change in externally visible behavior — this slice makes the existing platform faster and bounded under growth.
+
+### Changed
+- **Discovery feed no longer loads snapshot history** (ADR-036). It was eager-loading `Portfolio.snapshots` so a Python `max()` could pick each portfolio's latest health — **7,300 ORM objects materialized for a 20-item page** at one year of daily syncs, growing forever. Replaced with one batched `ROW_NUMBER()` query. Measured **589.6 ms → 82.5 ms** (~7×), and the cost no longer scales with history depth.
+- **Opt-in eager loading** on `get_visible_portfolio` for the paths that actually serialize a portfolio: `/portfolios/:id` −1 query, `/profile` −1, `/compare` −2.
+- **Historical price fetching** de-duplicates instruments, caches series in Redis (24 h TTL — past daily closes are immutable), and sends only cache misses through a bounded thread pool (default 4) (ADR-037). Previously one sequential broker call per holding, with the same ISIN refetched independently for every portfolio holding it.
+- **Indexes** (migration `0007`, ADR-035): added `portfolio_strategy_tags(strategy_category_id)`; replaced the snapshot index with `(portfolio_id, snapshot_date DESC, created_at DESC)` to match the actual ORDER BY; **dropped `ix_holdings_sector`**, verified unused by any query and rebuilt on every sync for zero reads.
+- **Discovery cache** now caches only the first 5 pages — the key embeds caller-controlled `page`, so unbounded paging could mint unlimited Redis keys (ADR-038).
+
+### Added
+- Opt-in pagination on `GET /portfolios/:id/history` and `/activity` (ADR-038). Omit the params and the response is byte-identical to before; supply `page`/`per_page` for a bounded slice plus `meta.pagination`.
+- `scripts/benchmark_endpoints.py` — seeds a disposable `nexarch_bench` database (60 portfolios × 365 snapshots) and reports query counts plus wall-vs-database time per endpoint, so before/after is reproducible.
+- `tests/test_query_performance.py` — query-shape regression guards, both verified to fail against the pre-change code.
+- `HISTORICAL_PRICE_CONCURRENCY` and `HISTORICAL_PRICE_CACHE_TTL_SECONDS` config.
+
+### Fixed
+- **Discovery and analytics could report different health for the same portfolio.** `resolve_latest_health` ranked snapshots by `snapshot_date` alone while `get_latest_snapshot` ordered by `(snapshot_date, created_at)` — so for two snapshots sharing a calendar date, which one won was nondeterministic and endpoint-dependent. Exactly the inconsistency ADR-025 exists to prevent. Now both use the same ordering; a regression test reproduces the old behaviour as `0.11 != 0.99`.
+
+### Notes
+- Measurement discipline mattered more than intuition here. The headline bug had a completely healthy query count (6) — only the gap between wall time and database time exposed it, and only at seeded volume; the dev database's 2 snapshots hid it entirely.
+- Two self-inflicted mistakes worth recording: applying eager loading unconditionally first made `/history` (2→5 queries) and `/compare` (16→20) *worse* before opt-in fixed it; and an initial `DISTINCT ON` implementation would have silently returned the **oldest** snapshot per portfolio on SQLite, since SQLAlchemy ignores `DISTINCT ON` there — caught by a deprecation warning, not by a failing test.
+- Honest scope limit: opt-in pagination bounds the *response*, not the underlying query — the full history is still read and sliced in Python. Genuinely bounding the read needs cursor-based pagination, logged as remaining debt.
+
+---
+
 ## [2026-07-27] — Phase 2.5, Slice 2: Reliability & Observability
 
 ### Added

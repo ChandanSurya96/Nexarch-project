@@ -11,6 +11,7 @@ metrics — see app/services/strategy_categorization_service.py.
 from __future__ import annotations
 
 import uuid
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import UTC, date, datetime, timedelta
 
 from flask import current_app
@@ -28,7 +29,7 @@ from app.models.holding import Holding
 from app.models.portfolio import Portfolio
 from app.models.portfolio_snapshot import PortfolioSnapshot
 from app.models.strategy_category import PortfolioStrategyTag
-from app.services import audit_service
+from app.services import audit_service, price_cache_service
 from app.services.analytics_service import (
     compute_asset_allocation,
     compute_health_metrics,
@@ -45,6 +46,43 @@ from app.services.strategy_categorization_service import categorize, ensure_stra
 _VOLATILITY_LOOKBACK_DAYS = 365
 
 
+def _fetch_closes_for_instrument(
+    adapter: BrokerAdapter,
+    access_token: str,
+    isin: str,
+    exchange: str,
+    from_date: date,
+    to_date: date,
+    cache_ttl_seconds: int,
+) -> list[float] | None:
+    """One instrument's closes: cache first, broker on miss. None on failure.
+
+    Runs inside a worker thread (see _fetch_closes_by_holding_id), so it must
+    touch nothing request- or app-context-scoped: no db.session, no
+    current_app, no Flask g. Only the adapter's HTTP call and the Redis
+    cache, both safe to use concurrently. That's why cache_ttl_seconds is
+    passed in rather than read from config here — config lives behind
+    current_app, which does not exist on this thread.
+    """
+    cached = price_cache_service.get_closes(isin, exchange, from_date, to_date)
+    if cached is not None:
+        return cached
+
+    try:
+        points = adapter.fetch_historical_prices(access_token, isin, exchange, from_date, to_date)
+    except (BrokerTokenExpiredError, BrokerRateLimitError, BrokerAPIError):
+        # Same per-instrument isolation as before (ADR-034): one bad ISIN or a
+        # rate-limited single call doesn't fail the whole sync, it just leaves
+        # that holding out of the volatility figure.
+        return None
+
+    closes = [point.close for point in sorted(points, key=lambda p: p.trade_date)]
+    price_cache_service.set_closes(
+        isin, exchange, from_date, to_date, closes, ttl_seconds=cache_ttl_seconds
+    )
+    return closes
+
+
 def _fetch_closes_by_holding_id(
     adapter: BrokerAdapter, access_token: str, holdings: list[Holding]
 ) -> dict[uuid.UUID, list[float]]:
@@ -54,26 +92,76 @@ def _fetch_closes_by_holding_id(
     data for that instrument) doesn't fail the sync — it just doesn't
     contribute to the portfolio volatility figure, same "partial honesty
     over all-or-nothing" posture as the rest of this module.
+
+    Three things reduce broker load here (ADR-037), in order of impact:
+    1. Instruments are de-duplicated — two holdings of the same ISIN are one
+       fetch, not two.
+    2. Results are cached in Redis, so an instrument already fetched for
+       *any* portfolio (or an earlier sync) costs nothing.
+    3. Remaining misses go through a small bounded thread pool, since these
+       are pure network waits. Bounded deliberately: concurrency is capped
+       low so this stays well clear of broker rate limits, which is also why
+       ADR-034's retry/backoff still matters and is untouched here.
     """
     to_date = date.today()
     from_date = to_date - timedelta(days=_VOLATILITY_LOOKBACK_DAYS)
-    closes_by_holding_id: dict[uuid.UUID, list[float]] = {}
 
+    # Distinct instruments -> the holdings that share them.
+    holdings_by_instrument: dict[tuple[str, str], list[uuid.UUID]] = {}
     for holding in holdings:
         if not holding.isin or not holding.exchange:
             continue
-        try:
-            points = adapter.fetch_historical_prices(
-                access_token, holding.isin, holding.exchange, from_date, to_date
-            )
-        except (BrokerTokenExpiredError, BrokerRateLimitError, BrokerAPIError):
-            continue
-        if points:
-            closes_by_holding_id[holding.id] = [
-                point.close for point in sorted(points, key=lambda p: p.trade_date)
-            ]
+        holdings_by_instrument.setdefault((holding.isin, holding.exchange), []).append(holding.id)
 
-    return closes_by_holding_id
+    if not holdings_by_instrument:
+        return {}
+
+    # Config is read HERE, on the main thread, and passed down — worker
+    # threads have no app context to read current_app.config from.
+    max_workers = int(current_app.config.get("HISTORICAL_PRICE_CONCURRENCY", 4))
+    cache_ttl_seconds = int(
+        current_app.config.get(
+            "HISTORICAL_PRICE_CACHE_TTL_SECONDS", price_cache_service.DEFAULT_TTL_SECONDS
+        )
+    )
+    # Never spin up more threads than there is work for.
+    max_workers = max(1, min(max_workers, len(holdings_by_instrument)))
+    logger = current_app.logger  # bound on the main thread; safe to call from workers
+
+    closes_by_instrument: dict[tuple[str, str], list[float]] = {}
+    with ThreadPoolExecutor(max_workers=max_workers) as pool:
+        futures = {
+            pool.submit(
+                _fetch_closes_for_instrument,
+                adapter,
+                access_token,
+                isin,
+                exchange,
+                from_date,
+                to_date,
+                cache_ttl_seconds,
+            ): (isin, exchange)
+            for isin, exchange in holdings_by_instrument
+        }
+        for future in as_completed(futures):
+            instrument = futures[future]
+            try:
+                closes = future.result()
+            except Exception:
+                # Defensive: _fetch_closes_for_instrument already converts the
+                # known broker errors to None. Anything reaching here is
+                # unexpected, and still shouldn't take the whole sync down.
+                # (This runs on the main thread — as_completed yields here.)
+                logger.warning("Unexpected error fetching prices for %s", instrument, exc_info=True)
+                closes = None
+            if closes:
+                closes_by_instrument[instrument] = closes
+
+    return {
+        holding_id: closes
+        for instrument, closes in closes_by_instrument.items()
+        for holding_id in holdings_by_instrument[instrument]
+    }
 
 
 def run_sync(broker_connection_id: str, is_final_attempt: bool = True) -> None:

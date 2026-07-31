@@ -6,7 +6,7 @@ isolation from sync — see test_broker_connections.py for the connect->sync pat
 """
 
 import uuid
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 
 from app.extensions import db
 from app.models.holding import Holding
@@ -370,6 +370,72 @@ class TestGetHistory:
         resp = client.get(f"/api/v1/portfolios/{portfolio.id}/history")
         assert resp.status_code == 404
         assert resp.get_json()["error"]["code"] == "PORTFOLIO_NOT_FOUND"
+
+
+class TestHistoryOptInPagination:
+    """ADR-038 — history was unbounded; pagination is opt-in so the default
+    response stays byte-identical for existing clients (the frontend chart
+    consumes the whole series)."""
+
+    def _seed(self, client, email, username, count):
+        user_id, _ = _register_and_login(client, email, username)
+        portfolio = _make_portfolio(user_id, is_public=True)
+        for i in range(count):
+            db.session.add(
+                PortfolioSnapshot(
+                    portfolio_id=portfolio.id,
+                    snapshot_date=date(2026, 1, 1) + timedelta(days=i),
+                    total_value=1000 + i,
+                    sector_allocation={"IT": 1.0},
+                    asset_allocation={"Equity": 1.0},
+                    health_metrics={"holding_count": 1},
+                )
+            )
+        db.session.commit()
+        return portfolio
+
+    def test_no_params_returns_everything_with_no_pagination_meta(self, client):
+        portfolio = self._seed(client, "hist-page-a@example.com", "histpagea", 5)
+
+        resp = client.get(f"/api/v1/portfolios/{portfolio.id}/history")
+        assert resp.status_code == 200
+        body = resp.get_json()
+        assert len(body["data"]) == 5
+        # The load-bearing assertion: absent pagination params must produce
+        # the exact pre-ADR-038 shape, with no pagination key in meta.
+        assert "pagination" not in body["meta"]
+
+    def test_per_page_bounds_the_response_and_adds_meta(self, client):
+        portfolio = self._seed(client, "hist-page-b@example.com", "histpageb", 5)
+
+        resp = client.get(f"/api/v1/portfolios/{portfolio.id}/history?per_page=2")
+        assert resp.status_code == 200
+        body = resp.get_json()
+        assert len(body["data"]) == 2
+        assert body["meta"]["pagination"] == {
+            "page": 1,
+            "per_page": 2,
+            "total": 5,
+            "total_pages": 3,
+        }
+
+    def test_second_page_returns_the_next_slice(self, client):
+        portfolio = self._seed(client, "hist-page-c@example.com", "histpagec", 5)
+
+        first = client.get(f"/api/v1/portfolios/{portfolio.id}/history?per_page=2&page=1")
+        second = client.get(f"/api/v1/portfolios/{portfolio.id}/history?per_page=2&page=2")
+
+        first_dates = [e["snapshot_date"] for e in first.get_json()["data"]]
+        second_dates = [e["snapshot_date"] for e in second.get_json()["data"]]
+        assert len(second_dates) == 2
+        assert not set(first_dates) & set(second_dates)  # no overlap
+
+    def test_per_page_over_the_max_is_rejected(self, client):
+        portfolio = self._seed(client, "hist-page-d@example.com", "histpaged", 1)
+
+        resp = client.get(f"/api/v1/portfolios/{portfolio.id}/history?per_page=101")
+        assert resp.status_code == 400
+        assert resp.get_json()["error"]["code"] == "VALIDATION_ERROR"
 
 
 class TestSnapshotOrdering:

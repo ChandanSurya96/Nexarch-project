@@ -63,6 +63,17 @@ class Config:
     # is a paid-plan concern to enable deliberately, not a silent default.
     SENTRY_TRACES_SAMPLE_RATE: float = float(os.environ.get("SENTRY_TRACES_SAMPLE_RATE", 0.0))
 
+    # ── Historical prices (ADR-037) ───────────────────────────────────────────
+    # Concurrency for the sync worker's per-instrument price fetches. Kept
+    # deliberately low: these are outbound broker calls, and staying well
+    # under any broker's rate limit matters more than shaving sync latency.
+    HISTORICAL_PRICE_CONCURRENCY: int = int(os.environ.get("HISTORICAL_PRICE_CONCURRENCY", 4))
+    # Past daily closes are immutable, so a long TTL is safe; a day keeps the
+    # cache useful across syncs without pinning stale data indefinitely.
+    HISTORICAL_PRICE_CACHE_TTL_SECONDS: int = int(
+        os.environ.get("HISTORICAL_PRICE_CACHE_TTL_SECONDS", 24 * 60 * 60)
+    )
+
     # ── Rate limiting (ADR-032) ─────────────────────────────────────────────────
     RATELIMIT_STORAGE_URI: str = REDIS_URL
     RATELIMIT_HEADERS_ENABLED: bool = True
