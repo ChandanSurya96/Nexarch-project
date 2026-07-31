@@ -5,6 +5,8 @@ run tests locally. The production DATABASE_URL (Postgres) is unchanged.
 """
 
 import pytest
+from sqlalchemy import event
+from sqlalchemy.orm import scoped_session, sessionmaker
 
 from app import create_app
 from app.extensions import db as _db
@@ -22,6 +24,25 @@ def app():
 def _db_setup(app):
     """Create all tables once per test session; drop them at teardown."""
     with app.app_context():
+        engine = _db.engine
+
+        if engine.dialect.name == "sqlite":
+            # pysqlite's DBAPI manages its own transaction state under the hood and
+            # will silently end the connection-level transaction the `db` fixture
+            # relies on for rollback the moment it sees a SAVEPOINT/RELEASE emitted
+            # for a nested (app-level commit) transaction, unless its own implicit
+            # begin/commit handling is disabled like this. Recommended by the
+            # SQLAlchemy docs for exactly this "join a session into an external
+            # transaction with SAVEPOINTs" scenario. Postgres's driver doesn't have
+            # this quirk, so this only applies when TEST_DATABASE_URL isn't set.
+            @event.listens_for(engine, "connect")
+            def _sqlite_disable_pysqlite_txn_control(dbapi_connection, connection_record):
+                dbapi_connection.isolation_level = None
+
+            @event.listens_for(engine, "begin")
+            def _sqlite_emit_explicit_begin(conn):
+                conn.exec_driver_sql("BEGIN")
+
         _db.create_all()
         yield _db
         _db.drop_all()
@@ -34,30 +55,35 @@ def db(app, _db_setup):
     This keeps tests isolated without recreating the schema for every test.
     Each test sees a clean slate because the transaction is never committed.
 
-    Known gap: Flask-SQLAlchemy 3.x's Session.get_bind() looks up
-    self._db.engines[None] directly for any query that resolves a mapper,
-    ahead of whatever this fixture passes to session.configure(bind=...) —
-    including with join_transaction_mode="create_savepoint" set, which was
-    tried and confirmed (via a standalone repro script, not just reasoning
-    about the source) to NOT contain commits to this transaction the way it
-    would for a plain SQLAlchemy Session. So a real db.session.commit() from
-    application code still commits for real, and this fixture's rollback()
-    below only undoes writes that were never committed (e.g. a test that
-    asserts on a pre-commit `db.session.flush()` state). Tests that call
-    into services doing their own commit() — which is most of them — get
-    away with this because they use per-test-unique emails/ids, so a prior
-    test's leaked row never collides. Don't add a test that reuses another
-    test's identity/unique key and depends on rollback to isolate it.
+    Reconfiguring the *existing* ``db.session`` with ``bind=connection`` (the
+    standard SQLAlchemy recipe) doesn't work here: Flask-SQLAlchemy 3.x's
+    ``Session.get_bind()`` (flask_sqlalchemy/session.py) resolves binds through
+    its own ``db.engines`` registry and returns ``engines[None]`` (the real app
+    engine) before ever consulting the session's own ``bind`` attribute, so the
+    override is silently ignored and application code keeps committing through
+    the real engine. Instead, swap out ``db.session`` itself for a plain
+    (non-Flask-SQLAlchemy) scoped session bound directly to this connection —
+    that class's default ``get_bind()`` isn't overridden, so it honors ``bind``.
+    ``join_transaction_mode="create_savepoint"`` means nested
+    ``db.session.commit()`` calls from application code only release a
+    SAVEPOINT rather than ending the outer transaction we roll back below.
+    Model.query also picks this up because it resolves ``cls.__fsa__.session``
+    fresh on every access (flask_sqlalchemy/model.py), not a cached reference.
     """
     with app.app_context():
         connection = _db_setup.engine.connect()
         transaction = connection.begin()
-        # Bind the session to this connection so everything uses the same transaction.
-        _db_setup.session.configure(bind=connection)
+
+        original_session = _db_setup.session
+        testing_session_factory = sessionmaker(
+            bind=connection, join_transaction_mode="create_savepoint"
+        )
+        _db_setup.session = scoped_session(testing_session_factory)
 
         yield _db_setup
 
         _db_setup.session.remove()
+        _db_setup.session = original_session
         transaction.rollback()
         connection.close()
 
