@@ -9,8 +9,11 @@
     },
     {
       "name": "api",
-      "runtimeExecutable": "python",
-      "runtimeArgs": ["-m", "flask", "--app", "apps/api/wsgi.py", "run", "--port", "5000"],
+      "runtimeExecutable": "apps/api/venv/Scripts/python.exe",
+      "runtimeArgs": [
+        "-c",
+        "import os; os.chdir('apps/api'); from app import create_app; create_app().run(host='127.0.0.1', port=5000, debug=True, use_reloader=False)"
+      ],
       "port": 5000
     }
   ]
