@@ -90,7 +90,9 @@ def login():
 
     identity = str(user.id)
     access_token, refresh_token = refresh_token_service.issue_new_family(identity)
-    audit_service.log_event(identity, "login")
+    # No audit call here on purpose — authenticate_user() already logged the
+    # "login" event. Logging it again here (as this route did) wrote two rows
+    # per successful login.
 
     response, status_code = success({"access_token": access_token})
     # Set the refresh token as an httpOnly cookie — not in the body.
