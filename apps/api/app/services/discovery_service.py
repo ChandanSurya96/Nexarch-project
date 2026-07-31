@@ -11,12 +11,23 @@ whole discovery cache namespace rather than tracking exactly which
 filter/sort/page combinations include the affected portfolio is a
 deliberate simplification — revisit only if cache-miss volume from this
 becomes a real cost at scale.
+
+Invalidation is a **namespace version bump**, not a key sweep (ADR-045).
+Cache keys embed a counter; invalidating increments it, which orphans every
+old key at once in a single O(1) command. The previous implementation ran
+`SCAN` + one `DELETE` per match on every sync completion — and SCAN walks
+the *entire* Redis keyspace, not just the matching keys, so the cost was
+set by how much unrelated data shared the server (rate-limit counters,
+refresh-token families, the price cache) rather than by anything discovery
+owned. Orphaned keys are never read again and expire on their own TTL.
 """
 
 from __future__ import annotations
 
 import json
+import logging
 
+from redis.exceptions import RedisError
 from sqlalchemy import func
 from sqlalchemy.orm import selectinload
 
@@ -28,8 +39,15 @@ from app.models.user import User
 from app.schemas.portfolio import DiscoveryInvestorSchema
 from app.services.portfolio_service import get_latest_snapshots_for
 
+logger = logging.getLogger("app")
+
 _CACHE_TTL_SECONDS = 60
 _CACHE_KEY_PREFIX = "discovery:investors:"
+# Counter that namespaces every cache key. Incrementing it invalidates the
+# whole namespace at once. Deliberately has no TTL: if it expired, the
+# version would silently roll back to 0 and start matching orphaned keys
+# from a previous cycle — serving entries that were already invalidated.
+_CACHE_VERSION_KEY = "discovery:cache_version"
 # Only the first few pages are cached (ADR-038). The cache key includes
 # `page`, which is caller-controlled and unbounded, so caching every page
 # lets a crawler mint unlimited Redis keys — each held for the TTL — purely
@@ -50,13 +68,22 @@ def list_investors(
     """
     sort = sort if sort in _SORT_OPTIONS else "recency"
     is_cacheable = page <= _MAX_CACHEABLE_PAGE
-    cache_key = f"{_CACHE_KEY_PREFIX}{strategy_slug}:{sort}:{page}:{per_page}"
+    cache_key = f"{_CACHE_KEY_PREFIX}v{_cache_version()}:{strategy_slug}:{sort}:{page}:{per_page}"
 
     if is_cacheable:
-        cached = redis_client.get(cache_key)
-        if cached is not None:
-            results, total = json.loads(cached)
-            return results, total
+        # A cache is an optimisation; an unreachable one must not take the
+        # endpoint down. Before this guard, an unreachable Redis turned every
+        # discovery request into a 500 — the same failure mode that made
+        # /health return 500 during a Redis outage in Slice 2 (ADR-034), and
+        # the same fix: degrade to uncached rather than fail. A corrupt entry
+        # (json.JSONDecodeError) is treated as a miss for the same reason.
+        try:
+            cached = redis_client.get(cache_key)
+            if cached is not None:
+                results, total = json.loads(cached)
+                return results, total
+        except (RedisError, OSError, ValueError):
+            logger.warning("Discovery cache read failed; serving uncached", exc_info=True)
 
     query = Portfolio.query.filter(Portfolio.is_public.is_(True))
 
@@ -115,7 +142,10 @@ def list_investors(
     investor_schema = DiscoveryInvestorSchema(context={"latest_snapshots": latest_snapshots})
     results = investor_schema.dump(portfolios, many=True)
     if is_cacheable:
-        redis_client.set(cache_key, json.dumps((results, total)), ex=_CACHE_TTL_SECONDS)
+        try:
+            redis_client.set(cache_key, json.dumps((results, total)), ex=_CACHE_TTL_SECONDS)
+        except (RedisError, OSError):
+            logger.warning("Discovery cache write failed; result not cached", exc_info=True)
     return results, total
 
 
@@ -123,6 +153,36 @@ def list_strategy_categories() -> list[StrategyCategory]:
     return StrategyCategory.query.order_by(StrategyCategory.name.asc()).all()
 
 
+def _cache_version() -> int:
+    """Current namespace version; 0 when the counter has never been set.
+
+    0, not 1, and that matters: Redis INCR on a missing key returns 1, so if
+    "never set" also read as 1 the very first invalidation after a fresh
+    Redis would be a silent no-op — same version before and after, stale
+    entries still served for the rest of their TTL. Caught by
+    test_invalidate_stops_the_cached_entry_being_served.
+
+    A Redis failure here must not take the endpoint down; discovery still
+    works uncached. Falling back to version 1 is safe in the sense that
+    matters: the keys a stale version could match are themselves bounded by
+    the 60-second TTL, so the worst case is serving data no older than the
+    cache was ever allowed to serve.
+    """
+    try:
+        raw = redis_client.get(_CACHE_VERSION_KEY)
+    except (RedisError, OSError):
+        return 0
+    try:
+        return int(raw) if raw is not None else 0
+    except (TypeError, ValueError):
+        return 0
+
+
 def invalidate_discovery_cache() -> None:
-    """Called on sync completion (see sync_service.run_sync)."""
-    redis_client.scan_delete(f"{_CACHE_KEY_PREFIX}*")
+    """Called on sync completion (see sync_service.run_sync).
+
+    One INCR, regardless of how many cached pages exist. The keys written
+    under the previous version are never read again and expire on their own
+    60-second TTL, so nothing has to delete them.
+    """
+    redis_client.incr(_CACHE_VERSION_KEY)

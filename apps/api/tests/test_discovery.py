@@ -28,13 +28,14 @@ def fake_redis(monkeypatch):
     def _set(key, value, ex=None):
         store[key] = value
 
-    def _scan_delete(pattern):
-        prefix = pattern.rstrip("*")
-        for key in [k for k in store if k.startswith(prefix)]:
-            del store[key]
+    def _incr(key):
+        # Mirrors Redis INCR: absent key starts at 0, so the first call
+        # returns 1. Values are stored as strings, as real Redis does.
+        store[key] = str(int(store.get(key, 0)) + 1)
+        return int(store[key])
 
     monkeypatch.setattr("app.services.discovery_service.redis_client.set", _set)
-    monkeypatch.setattr("app.services.discovery_service.redis_client.scan_delete", _scan_delete)
+    monkeypatch.setattr("app.services.discovery_service.redis_client.incr", _incr)
     return store
 
 
@@ -166,13 +167,69 @@ class TestListInvestors:
         client.get(INVESTORS_URL)
         assert any(key.startswith("discovery:investors:") for key in fake_redis)
 
-    def test_invalidate_clears_cache(self, client, fake_redis):
+    def test_invalidate_stops_the_cached_entry_being_served(self, client, fake_redis):
+        """Invalidation orphans keys rather than deleting them (ADR-045).
+
+        Asserted through behaviour, not key count: what callers are owed is
+        that a read after invalidation does not return the pre-invalidation
+        entry. The old key lingering until its TTL is an implementation
+        detail, and asserting it was gone was really asserting SCAN+DELETE.
+        """
         _make_public_investor("Invalidate Test Investor", "invalidate-test-investor")
         client.get(INVESTORS_URL)
-        assert len(fake_redis) > 0
+
+        before = [k for k in fake_redis if k.startswith("discovery:investors:")]
+        assert len(before) == 1
 
         invalidate_discovery_cache()
-        assert len(fake_redis) == 0
+        client.get(INVESTORS_URL)
+
+        after = [k for k in fake_redis if k.startswith("discovery:investors:")]
+        new_keys = set(after) - set(before)
+        assert new_keys, "post-invalidation read served the stale entry instead of re-querying"
+
+    def test_invalidate_is_one_redis_call_regardless_of_cached_pages(
+        self, client, fake_redis, monkeypatch
+    ):
+        """The point of ADR-045: cost is O(1), not O(cached keys).
+
+        The previous implementation issued a keyspace SCAN plus one DELETE
+        per match on *every* sync completion.
+        """
+        _make_public_investor("Counting Investor", "counting-investor")
+        for page in range(1, 4):
+            for sort in ("recency", "portfolio_age", "alphabetical"):
+                client.get(f"{INVESTORS_URL}?page={page}&sort={sort}")
+
+        cached = [k for k in fake_redis if k.startswith("discovery:investors:")]
+        assert len(cached) >= 5, "need several cached pages for this to mean anything"
+
+        calls = []
+        real_incr = __import__(
+            "app.services.discovery_service", fromlist=["redis_client"]
+        ).redis_client.incr
+
+        def counting_incr(key):
+            calls.append(key)
+            return real_incr(key)
+
+        monkeypatch.setattr("app.services.discovery_service.redis_client.incr", counting_incr)
+        invalidate_discovery_cache()
+
+        assert len(calls) == 1, f"expected a single INCR, got {len(calls)} calls"
+
+    def test_cache_version_falls_back_to_1_when_redis_is_down(self, client, monkeypatch):
+        """A Redis outage must degrade to uncached, not to a 500."""
+
+        def _boom(*_args, **_kwargs):
+            raise ConnectionError("redis is down")
+
+        monkeypatch.setattr("app.services.discovery_service.redis_client.get", _boom)
+        monkeypatch.setattr("app.services.discovery_service.redis_client.set", _boom)
+
+        _make_public_investor("Outage Investor", "outage-investor")
+        resp = client.get(INVESTORS_URL)
+        assert resp.status_code == 200
 
 
 class TestStrategyCategories:
