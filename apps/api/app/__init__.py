@@ -14,6 +14,7 @@ from flask import Flask, g
 
 from app.extensions import bcrypt, db, jwt, limiter, migrate, redis_client
 from app.logging_config import configure_logging
+from app.monitoring import configure_monitoring
 
 
 def create_app(config_name: str | None = None) -> Flask:
@@ -37,8 +38,22 @@ def create_app(config_name: str | None = None) -> Flask:
     app = Flask(__name__)
     app.config.from_object(config_map[config_name])
 
+    # ── Fail-fast config validation (ADR-039) ─────────────────────────────────
+    # Before anything else binds or serves: a production app with a missing or
+    # placeholder JWT_SECRET would otherwise start cleanly and issue forgeable
+    # tokens. Production only — dev/testing keep their working defaults.
+    if config_name == "production":
+        from app.config_validation import validate_production_config
+
+        validate_production_config(app)
+
     # ── Structured logging (ADR-034) ──────────────────────────────────────────
     configure_logging(app)
+
+    # ── Error tracking (ADR-041) ──────────────────────────────────────────────
+    # No-op unless SENTRY_DSN is set. Initialised early so errors raised
+    # during the rest of app setup are captured too.
+    configure_monitoring(app)
 
     # ── Bind extensions ───────────────────────────────────────────────────────
     db.init_app(app)

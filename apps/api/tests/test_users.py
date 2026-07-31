@@ -2,8 +2,6 @@
 
 import uuid
 
-import pytest
-
 from app.extensions import db
 from app.models.portfolio import Portfolio
 

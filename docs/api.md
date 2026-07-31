@@ -57,6 +57,7 @@ Every failure path returns the envelope above — including ones that never reac
 | `METHOD_NOT_ALLOWED` | 405 | Route exists but not for this HTTP method |
 | `INTERNAL_SERVER_ERROR` | 500 | Unhandled exception — logged server-side with full detail, never leaked to the client |
 | `NOT_READY` | 503 | `GET /health/ready` only — DB and/or Redis unreachable (ADR-034) |
+| `SYNC_UNHEALTHY` | 503 | `GET /health/sync` only — the background sync pipeline is not running (ADR-047) |
 
 ## Pagination
 
@@ -107,8 +108,15 @@ Access tokens are short-lived (15 min); refresh tokens are longer-lived and stor
 ```
 GET    /health         # liveness — process is up, no dependency checks
 GET    /health/ready   # readiness — confirms DB and Redis are reachable
+GET    /health/sync    # sync-pipeline health — is the scheduled sync actually running?
 ```
 Added ADR-034 in [decisions.md](./decisions.md). No auth, no rate limit — deployment platforms expect an unauthenticated, fast-responding probe, the same convention `docker-compose.yml` already uses for the `postgres`/`redis` containers themselves. `/health` always returns `200` regardless of dependency state (a DB/Redis outage shouldn't also fail the liveness probe and get the process restarted for no reason); `/health/ready` returns `200` with `{"status": "ok", "checks": {"database": true, "redis": true}}` when both are reachable, or `503` with `error.code: "NOT_READY"` otherwise.
+
+`GET /health/sync` (ADR-047) answers a different question from readiness: **is the background sync pipeline alive?** It reports four independent checks — `scheduler` (Celery Beat fired the daily task recently), `worker` (a worker actually consumed a sync task), `recent_success` (some sync completed successfully), and `failure_rate` (share of connections stuck in `error`) — plus an informational `last_fanout_size`. Each check carries the measurement behind its verdict (`age_seconds`, `threshold_seconds`, counts), so an alert is actionable without further digging.
+
+It returns `200` when nothing is definitely broken, and `503` with `error.code: "SYNC_UNHEALTHY"` otherwise, with the full check detail under `meta.checks`. A check whose signal is unavailable — a fresh deployment that has never synced — reports `"healthy": null` and does **not** fail the probe; "unknown" is not "broken".
+
+This endpoint is for a monitoring/uptime check to poll, **not** for load-balancer or orchestration health. It is deliberately excluded from `/health/ready`: a dead scheduler must never pull healthy API instances out of rotation, because the API is fine — the pipeline isn't.
 
 ### Users & Profiles
 ```

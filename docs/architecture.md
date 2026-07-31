@@ -96,7 +96,7 @@ Neither write is a true upsert: Holdings and strategy-category tags are deleted 
 ## Caching Strategy
 
 - Computed portfolio-health metrics (diversification, concentration) are cached in Redis and recomputed on sync, not on every page load.
-- Discovery feed queries (filtered/sorted investor lists) are cached with a short TTL, invalidated on new sync completion for affected portfolios. Only the first few pages are cached — the cache key embeds `page`, which is caller-controlled, so caching every page would let a crawler mint unbounded Redis keys (ADR-038).
+- Discovery feed queries (filtered/sorted investor lists) are cached with a short TTL, invalidated on new sync completion. Invalidation is a **namespace version bump** — cache keys embed a counter and invalidating increments it in one O(1) command, orphaning every old key at once (ADR-045). It is deliberately *not* a `SCAN`+`DELETE` sweep, which walks the whole Redis keyspace and so charged discovery for however much unrelated data shared the server. Cache reads and writes are also failure-tolerant: an unreachable Redis degrades discovery to uncached rather than returning 500. Only the first few pages are cached — the cache key embeds `page`, which is caller-controlled, so caching every page would let a crawler mint unbounded Redis keys (ADR-038).
 - Broker historical price series are cached in Redis, keyed by (instrument, exchange, date range), with a 24-hour TTL (ADR-037). Daily closes for a past window are immutable, so this is safe, and it collapses what used to be one broker call per holding per portfolio per sync into one call per instrument per TTL. Only market data is cached — never holdings or anything user-specific.
 
 **Reading "latest" from an append-only table.** `portfolio_snapshots` grows by one row per sync forever, so anything that wants the *current* state of many portfolios at once (the discovery feed) must ask the database for the latest row per portfolio rather than loading the collection and picking in Python. That's a single ranked query (`ROW_NUMBER() OVER (PARTITION BY portfolio_id ...)`), not an ORM relationship load — see ADR-036 for the measured reason this matters, and `scripts/benchmark_endpoints.py` for the harness that catches it regressing.
@@ -113,7 +113,9 @@ MVP does not need to be over-engineered for scale it doesn't have yet, but the s
 
 - **Local:** Docker Compose for Postgres + Redis; frontend and backend run natively for fast iteration.
 - **Staging:** mirrors production topology at smaller scale, used for broker-integration testing against sandbox credentials where brokers provide them (Upstox does; not all do — see [broker-integrations.md](./broker-integrations.md)).
-- **Production:** Vercel (frontend), Railway or AWS (backend + workers + Postgres + Redis).
+- **Production:** Vercel (frontend), Railway (backend + workers + Postgres + Redis) — confirmed in ADR-040, which settles the earlier "Railway or AWS" open question. API and sync worker run from one container image (`apps/api/Dockerfile`) differing only in start command, served by gunicorn. **Not yet provisioned** — the deploy pipeline exists and has never been executed. See [operations.md](./operations.md).
+
+Configuration is validated at startup in production (ADR-039): the app refuses to boot if `JWT_SECRET`, `ENCRYPTION_KMS_KEY_ID`, `DATABASE_URL`, or `REDIS_URL` is missing, empty, or a placeholder. Deployment, rollback, backup/restore, secret rotation, and incident response are all documented in [operations.md](./operations.md).
 
 ## Open Architectural Questions
 

@@ -74,9 +74,24 @@ class RedisClient:
     def delete(self, key: str) -> None:
         self._client.delete(key)
 
+    def incr(self, key: str) -> int:
+        """Atomically increment a counter, creating it at 1 if absent.
+
+        Used for O(1) cache-namespace invalidation (ADR-045). Atomic, so
+        concurrent syncs finishing together each bump the version rather
+        than racing to compute the same next value.
+        """
+        return self._client.incr(key)
+
     def scan_delete(self, pattern: str) -> None:
-        """Delete every key matching pattern — used for cache invalidation
-        on sync completion."""
+        """Delete every key matching pattern.
+
+        NOT used for discovery-cache invalidation any more — that is a
+        version bump now (ADR-045). SCAN walks the whole keyspace, so this
+        is O(total keys in Redis), not O(matched keys); it is only
+        appropriate for a rare, deliberate sweep, never a per-sync
+        operation.
+        """
         for key in self._client.scan_iter(match=pattern):
             self._client.delete(key)
 
