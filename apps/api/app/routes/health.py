@@ -19,10 +19,11 @@ slice's own verification returned 500, not the unaffected 200 it should.
 
 from __future__ import annotations
 
-from flask import Blueprint
+from flask import Blueprint, current_app, jsonify
 from sqlalchemy import text
 
 from app.extensions import db, limiter, redis_client
+from app.services import sync_monitor_service
 from app.utils.responses import error, success
 
 health_bp = Blueprint("health", __name__)
@@ -61,3 +62,51 @@ def readiness():
         return success({"status": "ok", "checks": checks})
     unreachable = [name for name, ok in checks.items() if not ok]
     return error("NOT_READY", f"Unreachable: {', '.join(unreachable)}.", 503)
+
+
+@health_bp.get("/health/sync")
+def sync_health():
+    """Whether the background sync pipeline is actually running (ADR-047).
+
+    Deliberately separate from /health/ready. Readiness answers "should this
+    instance receive traffic", and a dead Celery Beat must never pull the API
+    out of the load balancer — the API is fine, the pipeline isn't. This is a
+    monitored endpoint, not an orchestration probe: point an uptime check at
+    it and alert on 503.
+
+    503 means at least one condition is definitely breached. Conditions whose
+    signal is simply unavailable (a fresh deployment that has never synced)
+    report `null` and do not fail the probe — alerting on a system's first
+    hour is how an alert gets ignored.
+    """
+    status = sync_monitor_service.get_sync_status(
+        scheduler_max_age_hours=current_app.config["SYNC_SCHEDULER_MAX_AGE_HOURS"],
+        worker_max_age_hours=current_app.config["SYNC_WORKER_MAX_AGE_HOURS"],
+        success_max_age_hours=current_app.config["SYNC_SUCCESS_MAX_AGE_HOURS"],
+        max_error_ratio=current_app.config["SYNC_MAX_ERROR_RATIO"],
+    )
+
+    if status["healthy"]:
+        return success({"status": "ok", "checks": status["checks"]})
+
+    failing = [name for name, check in status["checks"].items() if check.get("healthy") is False]
+    # Built inline rather than via error(): the standard envelope's error
+    # branch carries no payload, and a monitoring endpoint that returns 503
+    # with no measurements makes whoever is paged go and find them by hand.
+    # The checks go under `meta`, which is where the documented envelope
+    # (ADR-029, docs/api.md) puts non-error detail — the envelope's shape is
+    # unchanged, so error() itself doesn't need widening for one caller.
+    # Failing names are also in the message, so an alert that only forwards
+    # the message is still actionable.
+    body = {
+        "data": None,
+        "meta": {"checks": status["checks"]},
+        "error": {
+            "code": "SYNC_UNHEALTHY",
+            "message": (
+                f"Sync pipeline unhealthy: {', '.join(failing) or 'dependency unavailable'}."
+            ),
+            "status": 503,
+        },
+    }
+    return jsonify(body), 503

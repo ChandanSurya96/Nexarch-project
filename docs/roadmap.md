@@ -76,16 +76,29 @@ Explicitly excluded from Phase 1 (per founding scope, restated so it doesn't qui
 
 ## Phase 2.5 — Production Hardening
 
-**Goal:** Close the gap between what the docs claimed and what the code actually did, before adding more surface area (Account Aggregator, additional brokers) on top of it. Sequenced as four focused slices rather than one undifferentiated cleanup pass:
+**Goal:** Close the gap between what the docs claimed and what the code actually did, before adding more surface area (Account Aggregator, additional brokers) on top of it. Sequenced as five focused slices rather than one undifferentiated cleanup pass:
 
 1. **Security & API** *(done — see [decisions.md](./decisions.md) ADR-029 through ADR-033)*: every failure path returns the documented response envelope; refresh-token rotation with family-based reuse detection; CSRF protection actually enabled (previously documented as if it were); rate limiting actually implemented (previously documented as if it were); a real database-level backstop for one-broker-connection-per-user; `GET /users/me/following` paginated like every other list endpoint; `/portfolios/compare`'s query parsing moved onto the same schema convention every other endpoint uses.
 2. **Reliability** *(done — see [decisions.md](./decisions.md) ADR-034)*: sync-pipeline retry policy (rate-limit failures retry with backoff; token-expiry and unexpected errors don't); every sync failure path now consistently sets connection status, logs, and audit-logs (previously the most common failure class was silent); the daily scheduled sync no longer permanently drops a connection after one transient failure; `task_acks_late`/`task_reject_on_worker_lost` so a worker crash mid-sync doesn't lose the job forever; structured JSON logging with request-id correlation; `GET /health` and `GET /health/ready` endpoints. External alerting/APM deliberately deferred to the Deployment slice below, once a real hosting decision exists to tie it to.
 3. **Performance & Database** *(done — see [decisions.md](./decisions.md) ADR-035 through ADR-038)*: the discovery feed no longer loads every portfolio's entire snapshot history to read one number (589 ms → 82 ms, and no longer growing with history); latest-snapshot reads are one ranked query; index changes justified by `EXPLAIN ANALYZE` at realistic volume, including dropping one that served no query; broker historical-price fetches de-duplicated, cached, and bounded-parallel; opt-in pagination for the two previously-unbounded collections; a reproducible benchmark harness (`scripts/benchmark_endpoints.py`) and query-shape regression tests. Also fixed a real correctness bug found on the way: discovery and analytics could disagree about a portfolio's latest health.
 4. **Deployment & Operations** *(done — see [decisions.md](./decisions.md) ADR-039 through ADR-043)*: production now refuses to start on unsafe configuration — it previously booted with an empty JWT signing secret and issued forgeable tokens; CI (lint/typecheck/test/build against real Postgres and Redis) enforcing what `development-guide.md` had claimed since Phase 0 but nothing implemented; containerised Railway deploy with migrations run before traffic cutover; Sentry wired but inert until a DSN is set; backup/restore scripts with a restore drill that has actually been executed; and the secret-rotation runbook [security.md](./security.md) flagged as missing — including the honest finding that `ENCRYPTION_KMS_KEY_ID` cannot currently be rotated without breaking every broker connection. See [operations.md](./operations.md).
 
-**Before private beta**, two items from this phase remain open and are deliberately *not* marked done:
-- **Key-versioned encryption** so `ENCRYPTION_KMS_KEY_ID` can be rotated without forcing every user to reconnect their broker (ADR-043).
-- **Provisioning the actual infrastructure** — the Railway project, Vercel project, and Sentry project don't exist yet, so the deploy pipeline has never run.
+5. **Review Fixes & Operational Hardening** *(done — see [decisions.md](./decisions.md) ADR-044 through ADR-047)*: closes the engineering review. Login no longer leaks whether an email is registered through response timing (measured 122x, now 1.08x); `ENCRYPTION_KMS_KEY_ID` is rotatable with zero user reconnects, verified by executing a rotation and then removing the old key; `GET /health/sync` makes a stopped scheduler or stalled worker observable, since the sync pipeline's worst failure is silence; the daily sync is spread across a window instead of firing every connection at once; discovery cache invalidation is O(1); and a latent production 500 on every broker *reconnect* — an enum value missing since Milestone 2 — was caught by CI's first run against real Postgres.
+
+**Phase 2.5 is complete. The project state is now: Beta Candidate.**
+
+Engineering hardening stops here deliberately. What remains before real users is operational, not architectural, and most of it cannot be done from a repository:
+
+1. Merge the remaining PRs.
+2. Provision Railway and Vercel (and Sentry, if error tracking is wanted from day one).
+3. Perform the first real deployment.
+4. Execute the production checklist in [operations.md](./operations.md).
+5. Invite a handful of trusted beta users.
+6. Collect real-world feedback **before** adding more features.
+
+**Explicitly blocked, not skipped:**
+- **The deployment rehearsal** (migrations against production, rollback, first deploy, health verification under real traffic) is **blocked until the deployment environment exists**. Migrations, Docker startup, graceful shutdown, and the backup/restore drill have all been exercised locally; an actual deploy cannot be rehearsed against infrastructure that hasn't been provisioned, and a runbook step nobody has run is exactly what this phase existed to eliminate.
+- **Provisioning itself** — accounts, payment details, and real secret values are the founder's to create and hold. Every config, workflow, script, and runbook that consumes them is written and waiting.
 
 Beta launch follows this phase, not Account Aggregator or additional-broker work.
 

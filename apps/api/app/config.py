@@ -83,6 +83,28 @@ class Config:
         os.environ.get("HISTORICAL_PRICE_CACHE_TTL_SECONDS", 24 * 60 * 60)
     )
 
+    # ── Scheduled sync fan-out (ADR-046) ──────────────────────────────────────
+    # The daily sync is spread across this window instead of firing every
+    # connection at 02:00:00 sharp. Broker rate limits are per-application,
+    # so the herd grows with total users, not per-user activity.
+    SYNC_WINDOW_MINUTES: int = int(os.environ.get("SYNC_WINDOW_MINUTES", 120))
+    # Upper bound on how many syncs may start close together.
+    SYNC_BATCH_SIZE: int = int(os.environ.get("SYNC_BATCH_SIZE", 20))
+
+    # ── Sync monitoring thresholds (ADR-047) ──────────────────────────────────
+    # Read by GET /health/sync. Defaults assume the daily 02:00 schedule:
+    # 26h gives a full cycle plus the fan-out window plus slack, so a single
+    # late run doesn't page anyone but a genuinely missed day does.
+    SYNC_SCHEDULER_MAX_AGE_HOURS: int = int(os.environ.get("SYNC_SCHEDULER_MAX_AGE_HOURS", 26))
+    SYNC_WORKER_MAX_AGE_HOURS: int = int(os.environ.get("SYNC_WORKER_MAX_AGE_HOURS", 26))
+    # Two missed days before this fires — one bad night is a broker problem,
+    # two is ours.
+    SYNC_SUCCESS_MAX_AGE_HOURS: int = int(os.environ.get("SYNC_SUCCESS_MAX_AGE_HOURS", 50))
+    # Fraction of connections stuck in "error" that counts as unhealthy.
+    # Some individual failures are normal (a user revoked access); half of
+    # them failing is not.
+    SYNC_MAX_ERROR_RATIO: float = float(os.environ.get("SYNC_MAX_ERROR_RATIO", 0.5))
+
     # ── Rate limiting (ADR-032) ─────────────────────────────────────────────────
     RATELIMIT_STORAGE_URI: str = REDIS_URL
     RATELIMIT_HEADERS_ENABLED: bool = True

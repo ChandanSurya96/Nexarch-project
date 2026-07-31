@@ -10,6 +10,32 @@ Nothing pending beyond what's logged below — this section stays as the running
 
 ---
 
+## [2026-07-31] — Phase 2.5, Slice 5: Review Fixes & Operational Hardening — **Beta Candidate**
+
+Closes the engineering review's findings. No new product surface; this is the last hardening slice before the first real deployment.
+
+### Security fixes
+- **Account enumeration via login response timing.** `authenticate_user` spelled its check as `user is None or not bcrypt.check_password_hash(...)`, and `or` short-circuits — so an unknown email never reached bcrypt and was rejected in **2.8 ms**, while a registered address paid the full cost factor: **338.8 ms**. Identical response bodies don't help when the clock answers the question. Login now always performs exactly one bcrypt verification, against a per-process random dummy hash when the email is unknown. Measured after: **365.5 ms vs 337.9 ms, ratio 1.08x** (was 122x). `scripts/benchmark_login_timing.py` reproduces both. The dummy hash derives from the app's own configured cost factor, so raising `BCRYPT_LOG_ROUNDS` can't silently reopen the gap.
+- **Encryption master key is now rotatable** (ADR-044), superseding ADR-043's "fix before beta". Stored tokens carry a key-version prefix, several keys can be configured at once, and `scripts/rewrap_encryption_keys.py` re-wraps existing rows. **No schema change and no data migration** — an unversioned value is unambiguously version 1. Verified by executing a rotation, not arguing it: a token written in the genuine pre-ADR-044 format was rotated to v2, the v1 key was then removed entirely, and the plaintext returned byte-identical. The dev database's real token — written months ago by the old code — also decrypts unchanged.
+
+### Fixed
+- **`reconnect` was never in `audit_event_type_enum`** — latent since Milestone 2. Every broker *reconnect* (the routine path; Kite-style tokens expire daily) hit `InvalidTextRepresentation` and returned **500 in production**, after the connection row had already committed. Invisible for three hardening slices because the suite ran on SQLite, which doesn't enforce enums; CI's first run against real Postgres caught it immediately. Migration `0008`, plus `tests/test_audit_log_enum.py`, which parses every `log_event` call site and fails on SQLite in under a second — the same bug had already shipped once (0006).
+- **Duplicate audit rows per login.** Route *and* service both wrote a `login` event, doubling the success side of any failed-vs-successful ratio computed from `audit_logs` during an incident. The service owns it; the route call is gone.
+- **Discovery returned 500 whenever Redis was unreachable.** `list_investors` called Redis with no error handling — the same failure mode as the `/health` outage bug in ADR-034. Now degrades to uncached.
+- **CI never checked out `apps/web`** (a submodule), so the frontend job had been failing on its first real run.
+
+### Added
+- **Sync-pipeline monitoring** (ADR-047) — `GET /health/sync`, with four independent checks: scheduler alive, worker alive, a recent successful sync, and the share of connections stuck in `error`. Built on Redis heartbeats and Postgres only; no external provider. The pipeline's worst failure is silence — if Beat dies, nothing raises and every other endpoint stays green while holdings quietly go stale. Deliberately *not* part of `/health/ready`: a dead scheduler must never pull healthy API instances out of the load balancer. Checks whose signal is unavailable report `null`, not unhealthy.
+- **Scheduled sync is spread across a window** (ADR-046) — shuffled, batched (`SYNC_BATCH_SIZE`, 20) across `SYNC_WINDOW_MINUTES` (120) with jitter, instead of firing every connection at 02:00:00. Broker rate limits are per-application, so the old fan-out spiked with total users and got worse precisely as the product succeeded.
+- **O(1) discovery cache invalidation** (ADR-045) — one `INCR` on a namespace counter, replacing `SCAN` + a `DELETE` per key on every sync completion. `SCAN` walks the whole keyspace, so the cost was set by unrelated data sharing the Redis instance.
+
+### Notes
+- **Deployment rehearsal is deliberately not done, and is marked blocked** — a real rehearsal needs the Railway and Vercel projects, which don't exist yet. Migrations, Docker startup, graceful shutdown and the backup/restore drill were all exercised locally in Slice 4; an actual deploy cannot be rehearsed against infrastructure that isn't provisioned, and writing a runbook step nobody has run is the failure mode this phase exists to eliminate.
+- Three bugs this slice were found by *running* things rather than reading them: the rotation script called a database with a missing key perfectly healthy (`key_version_of` parses a prefix and needs no key); the cache version counter's "never set" fallback of 1 collided with `INCR`'s first return value of 1, making the first invalidation a silent no-op; and the new sync heartbeats leaked into real dev Redis from a test that had no Redis fake — the same leak the price cache had in Slice 3.
+- One self-inflicted mistake worth recording: running `black` with a path outside `apps/api` moved its config root to the repo root, which has no `pyproject.toml`, so it silently reformatted **68 files** at line-length 88 instead of the configured 100. Re-running at 100 does *not* undo it — black's magic trailing comma makes the round trip lossy — so the fix was `git checkout` of every unintended file.
+
+---
+
 ## [2026-07-29] — Phase 2.5, Slice 4: Deployment & Operations
 
 ### Security fix

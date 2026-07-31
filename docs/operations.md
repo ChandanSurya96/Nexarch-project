@@ -177,8 +177,8 @@ Railway rotates and updates `DATABASE_URL` together; redeploy to pick it up. Tak
 Built (ADR-034, ADR-041):
 
 - **Structured JSON logs** with a per-request correlation id, echoed to the client as `X-Request-ID`. Given a user's request id, you can find every log line for that request.
-- **`audit_logs`** — the durable record of `connect`/`disconnect`/`sync`/`login`/`logout`/`token_refresh`/`refresh_reuse_detected`/`error`.
-- **Health endpoints** — `/health` (liveness) and `/health/ready` (readiness).
+- **`audit_logs`** — the durable record of `connect`/`reconnect`/`disconnect`/`sync`/`login`/`logout`/`token_refresh`/`refresh_reuse_detected`/`error`.
+- **Health endpoints** — `/health` (liveness), `/health/ready` (readiness), and `/health/sync` (sync-pipeline health, ADR-047).
 - **Sentry**, inert until `SENTRY_DSN` is set. PII is off (`send_default_pii=False`) and a scrubber redacts secret-shaped keys, because request bodies here carry passwords and broker OAuth codes.
 
 **Alerts to configure once Sentry is connected** (recommended, not auto-created):
@@ -190,6 +190,32 @@ Built (ADR-034, ADR-041):
 | 5xx rate above baseline | Anything from a bad deploy to a dependency failure |
 | `/health/ready` failing | DB or Redis unreachable — user-visible within seconds |
 | Celery queue depth growing | Workers dead or wedged; syncs silently stop |
+| **`/health/sync` returning 503** | The single most important one below — see "Watching the sync pipeline" |
+
+### Watching the sync pipeline
+
+The sync pipeline's worst failure is **silence**. If Celery Beat dies or every worker stops, nothing raises, nothing 500s, `/health` and `/health/ready` both stay green, and holdings just get quietly staler until a user notices their portfolio is a week old. ADR-034 made individual sync *failures* loud; ADR-047 makes their *absence* loud.
+
+Point an uptime check at `GET /health/sync` every 15 minutes and alert on 503. It needs no external provider — the signals come from Redis heartbeats and Postgres, both already required for the app to serve a request at all.
+
+```bash
+curl -fsS https://<api-host>/health/sync
+```
+
+Four independent checks, because they fail for different reasons and have different fixes:
+
+| Check | 503 means | First thing to do |
+|---|---|---|
+| `scheduler` | Beat hasn't fired the daily task inside `SYNC_SCHEDULER_MAX_AGE_HOURS` (26h) | Is the beat service running? It's a single process with no redundancy. |
+| `worker` | No worker has picked up a sync inside `SYNC_WORKER_MAX_AGE_HOURS` (26h) | Are worker containers up? Beat may be queueing into the void. |
+| `recent_success` | No sync has *succeeded* within `SYNC_SUCCESS_MAX_AGE_HOURS` (50h) | Everything above can look healthy while every sync fails at the broker. Check broker status and recent `error` audit events. |
+| `failure_rate` | More than `SYNC_MAX_ERROR_RATIO` (0.5) of connections are stuck in `error` | Syncs are running and failing. Broker outage, or a sync regression. |
+
+Read `meta.checks` in the 503 body for the actual measurements — `age_seconds` against `threshold_seconds`, and the connection counts. A check reporting `"healthy": null` is **unknown, not broken** (e.g. a fresh deployment that has never synced) and does not trigger the 503.
+
+`/health/sync` is deliberately **not** part of `/health/ready`. A dead scheduler must never pull healthy API instances out of the load balancer — the API is fine, the pipeline isn't.
+
+**Tuning the fan-out.** The daily sync is spread across `SYNC_WINDOW_MINUTES` (120) in batches of `SYNC_BATCH_SIZE` (20) rather than firing every connection at 02:00:00 (ADR-046). If a broker starts rate-limiting during the window, widen the window or shrink the batch — both are environment variables and need only a redeploy, no code change.
 
 ## Incident response
 
