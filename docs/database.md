@@ -157,12 +157,16 @@ Real Public Investor Library entries (Radhakishan Damani, Ashish Kacholia, Vijay
 | `users` | unique(`email`), unique(`username`) | login lookup, profile URL lookup |
 | `broker_connections` | (`user_id`) | one user's connections |
 | `portfolios` | (`user_id`), (`public_investor_id`), (`is_public`) | ownership lookup, discovery-feed filtering |
-| `holdings` | (`portfolio_id`), (`sector`) | portfolio detail page, sector-based discovery |
-| `portfolio_snapshots` | composite (`portfolio_id`, `snapshot_date`) | time-series queries for history charts |
-| `portfolio_strategy_tags` | composite (`portfolio_id`, `strategy_category_id`) | many-to-many lookups both directions |
+| `holdings` | (`portfolio_id`) | portfolio detail page |
+| `portfolio_snapshots` | composite (`portfolio_id`, `snapshot_date` DESC, `created_at` DESC) | "latest snapshot" and history queries — mirrors their ORDER BY exactly, tiebreaker included (ADR-025/ADR-035) |
+| `portfolio_strategy_tags` | composite PK (`portfolio_id`, `strategy_category_id`) + (`strategy_category_id`) | portfolio→tags via the PK; the standalone category index serves the discovery strategy filter, which keys on the PK's trailing column (ADR-035) |
 | `public_investors` | unique(`slug`) | public profile URL |
 | `follows` | unique(`follower_user_id`, `followed_portfolio_id`) | prevent duplicate follows, fast "am I following" check |
 | `audit_logs` | (`user_id`, `created_at`) | security review, support debugging |
+
+**`holdings.sector` is deliberately not indexed** (dropped in migration `0007`, ADR-035). Nothing queries by sector in SQL — sector allocation is computed in Python from already-loaded rows (`analytics_service.compute_sector_allocation`). Since `sync_service` deletes and reinserts every holding on every sync, that index was rebuilt continuously to serve zero reads. Re-add it the day a real query needs it, not before.
+
+**On adding indexes here:** every index is a write-time tax, and this schema's hottest write path (sync) rewrites whole tables rather than updating rows. Add one only when a specific query needs it, and confirm with `EXPLAIN ANALYZE` at realistic volume — `scripts/benchmark_endpoints.py` seeds a disposable database for exactly that. Note that a correctly-shaped index the planner currently ignores (because the table is small enough to seq-scan) can still be the right call as a scaling provision, but say so honestly rather than claiming a win.
 
 ## Migrations
 

@@ -77,6 +77,17 @@ GET /api/v1/discovery/investors?page=1&per_page=20
 
 `page`/`per_page` share one schema (`app/schemas/pagination.py`'s `PaginationQuerySchema`) across every paginated endpoint, so the bounds (`page >= 1`, `1 <= per_page <= 100`) and the `400 VALIDATION_ERROR` on violation can't drift between them. `GET /users/me/following` is paginated the same way (added alongside the Phase 2.5 hardening slice — it was the one list endpoint left unbounded).
 
+### Opt-in pagination
+
+`GET /portfolios/:id/history` and `GET /portfolios/:id/activity` support the same `page`/`per_page` params, but **do not paginate by default** (ADR-038). Omit both and the response is exactly what it has always been — every row, and no `pagination` key in `meta`. Supply either and you get a bounded slice plus the usual `meta.pagination` block:
+
+```
+GET /api/v1/portfolios/:id/history              # all rows, meta: {}
+GET /api/v1/portfolios/:id/history?per_page=50  # 50 rows, meta.pagination present
+```
+
+Both endpoints predate pagination and their existing consumers (the frontend history chart) read the whole series, so defaulting to a page size would have truncated them. Bounds and validation are identical to the standard schema.
+
 ## Authentication Flow
 
 ```

@@ -22,7 +22,7 @@ alone.
 import uuid
 from datetime import UTC, date, datetime
 
-from sqlalchemy import JSON, Date, ForeignKey, Numeric, Uuid, func
+from sqlalchemy import JSON, Date, ForeignKey, Index, Numeric, Uuid, desc, func
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.extensions import db
@@ -30,6 +30,18 @@ from app.extensions import db
 
 class PortfolioSnapshot(db.Model):
     __tablename__ = "portfolio_snapshots"
+    __table_args__ = (
+        # Mirrors the ORDER BY every "latest snapshot" / history query uses,
+        # direction included, so the ordering is satisfied from the index
+        # rather than a sort step — created_at is the ADR-025 tiebreaker,
+        # not decoration. See ADR-035 / migration 0007.
+        Index(
+            "ix_portfolio_snapshots_portfolio_latest",
+            "portfolio_id",
+            desc("snapshot_date"),
+            desc("created_at"),
+        ),
+    )
 
     id: Mapped[uuid.UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid.uuid4)
     portfolio_id: Mapped[uuid.UUID] = mapped_column(

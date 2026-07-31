@@ -34,7 +34,12 @@ class Holding(db.Model):
     avg_cost_price: Mapped[float | None] = mapped_column(Numeric(18, 6), nullable=True)
     # sector is enriched from a sector-mapping reference, not sourced directly
     # from brokers (brokers don't reliably expose this — see broker-integrations.md).
-    sector: Mapped[str | None] = mapped_column(String(100), nullable=True, index=True)
+    # Deliberately NOT indexed (ADR-035): nothing queries by sector in SQL —
+    # sector allocation is computed in Python from already-loaded rows
+    # (analytics_service.compute_sector_allocation). An index here would be
+    # rebuilt on every sync (holdings are delete-and-reinserted each time)
+    # to serve zero reads.
+    sector: Mapped[str | None] = mapped_column(String(100), nullable=True)
     market_cap_category: Mapped[str | None] = mapped_column(
         String(10), nullable=True
     )  # "large" | "mid" | "small"

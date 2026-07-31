@@ -6,7 +6,7 @@ isolation from sync — see test_broker_connections.py for the connect->sync pat
 """
 
 import uuid
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 
 from app.extensions import db
 from app.models.holding import Holding
@@ -157,7 +157,9 @@ class TestGetAnalytics:
         # Milestone 7 — categorize() runs off the same snapshot health_metrics,
         # read-time, so a low-volatility snapshot surfaces the Low-risk match
         # with its explanation, not just the raw tag list.
-        user_id, _ = _register_and_login(client, "analytics-categorized@example.com", "analyticscategorized")
+        user_id, _ = _register_and_login(
+            client, "analytics-categorized@example.com", "analyticscategorized"
+        )
         portfolio = _make_portfolio(user_id, is_public=True)
         snapshot = PortfolioSnapshot(
             portfolio_id=portfolio.id,
@@ -370,12 +372,80 @@ class TestGetHistory:
         assert resp.get_json()["error"]["code"] == "PORTFOLIO_NOT_FOUND"
 
 
+class TestHistoryOptInPagination:
+    """ADR-038 — history was unbounded; pagination is opt-in so the default
+    response stays byte-identical for existing clients (the frontend chart
+    consumes the whole series)."""
+
+    def _seed(self, client, email, username, count):
+        user_id, _ = _register_and_login(client, email, username)
+        portfolio = _make_portfolio(user_id, is_public=True)
+        for i in range(count):
+            db.session.add(
+                PortfolioSnapshot(
+                    portfolio_id=portfolio.id,
+                    snapshot_date=date(2026, 1, 1) + timedelta(days=i),
+                    total_value=1000 + i,
+                    sector_allocation={"IT": 1.0},
+                    asset_allocation={"Equity": 1.0},
+                    health_metrics={"holding_count": 1},
+                )
+            )
+        db.session.commit()
+        return portfolio
+
+    def test_no_params_returns_everything_with_no_pagination_meta(self, client):
+        portfolio = self._seed(client, "hist-page-a@example.com", "histpagea", 5)
+
+        resp = client.get(f"/api/v1/portfolios/{portfolio.id}/history")
+        assert resp.status_code == 200
+        body = resp.get_json()
+        assert len(body["data"]) == 5
+        # The load-bearing assertion: absent pagination params must produce
+        # the exact pre-ADR-038 shape, with no pagination key in meta.
+        assert "pagination" not in body["meta"]
+
+    def test_per_page_bounds_the_response_and_adds_meta(self, client):
+        portfolio = self._seed(client, "hist-page-b@example.com", "histpageb", 5)
+
+        resp = client.get(f"/api/v1/portfolios/{portfolio.id}/history?per_page=2")
+        assert resp.status_code == 200
+        body = resp.get_json()
+        assert len(body["data"]) == 2
+        assert body["meta"]["pagination"] == {
+            "page": 1,
+            "per_page": 2,
+            "total": 5,
+            "total_pages": 3,
+        }
+
+    def test_second_page_returns_the_next_slice(self, client):
+        portfolio = self._seed(client, "hist-page-c@example.com", "histpagec", 5)
+
+        first = client.get(f"/api/v1/portfolios/{portfolio.id}/history?per_page=2&page=1")
+        second = client.get(f"/api/v1/portfolios/{portfolio.id}/history?per_page=2&page=2")
+
+        first_dates = [e["snapshot_date"] for e in first.get_json()["data"]]
+        second_dates = [e["snapshot_date"] for e in second.get_json()["data"]]
+        assert len(second_dates) == 2
+        assert not set(first_dates) & set(second_dates)  # no overlap
+
+    def test_per_page_over_the_max_is_rejected(self, client):
+        portfolio = self._seed(client, "hist-page-d@example.com", "histpaged", 1)
+
+        resp = client.get(f"/api/v1/portfolios/{portfolio.id}/history?per_page=101")
+        assert resp.status_code == 400
+        assert resp.get_json()["error"]["code"] == "VALIDATION_ERROR"
+
+
 class TestSnapshotOrdering:
     """ADR-025 — snapshot_date isn't unique per portfolio (more than one
     sync can land on the same calendar date), so created_at is what makes
     "latest" and chronological ordering deterministic."""
 
-    def _same_day_snapshots(self, portfolio_id: uuid.UUID) -> tuple[PortfolioSnapshot, PortfolioSnapshot]:
+    def _same_day_snapshots(
+        self, portfolio_id: uuid.UUID
+    ) -> tuple[PortfolioSnapshot, PortfolioSnapshot]:
         same_day = date(2026, 7, 25)
         # The chronologically LATER snapshot is constructed (and added to
         # the session) FIRST, deliberately — this proves the ordering fix
@@ -432,9 +502,7 @@ class TestSnapshotOrdering:
         assert data["health"]["volatility"] == 0.20
 
     def test_history_includes_both_same_day_snapshots_in_creation_order(self, client):
-        user_id, _ = _register_and_login(
-            client, "ordering-history@example.com", "orderinghistory"
-        )
+        user_id, _ = _register_and_login(client, "ordering-history@example.com", "orderinghistory")
         portfolio = _make_portfolio(user_id, is_public=True)
         later, earlier = self._same_day_snapshots(portfolio.id)
         db.session.add_all([later, earlier])
@@ -458,7 +526,9 @@ class TestCompare:
     math covered by test_analytics_service.py) — these tests confirm the
     comparison endpoint wires the two together correctly."""
 
-    def _snapshot(self, portfolio_id, total_value, sector_allocation, holding_count, volatility=None):
+    def _snapshot(
+        self, portfolio_id, total_value, sector_allocation, holding_count, volatility=None
+    ):
         return PortfolioSnapshot(
             portfolio_id=portfolio_id,
             snapshot_date=date(2026, 7, 25),
@@ -494,7 +564,11 @@ class TestCompare:
 
         assert data["diff"]["total_value"] == {"a": 20000.0, "b": 25000.0, "delta": 5000.0}
         assert data["diff"]["health"]["holding_count"] == {"a": 10, "b": 14, "delta": 4}
-        assert data["diff"]["sector_allocation"]["Financials"] == {"a": 1.0, "b": 0.0, "delta": -1.0}
+        assert data["diff"]["sector_allocation"]["Financials"] == {
+            "a": 1.0,
+            "b": 0.0,
+            "delta": -1.0,
+        }
         assert data["diff"]["sector_allocation"]["IT"] == {"a": 0.0, "b": 1.0, "delta": 1.0}
 
     def test_rejects_comparing_a_portfolio_to_itself(self, client):
@@ -506,7 +580,9 @@ class TestCompare:
         assert resp.get_json()["error"]["code"] == "CANNOT_COMPARE_SAME_PORTFOLIO"
 
     def test_private_portfolio_on_either_side_returns_404(self, client):
-        owner_id, _ = _register_and_login(client, "compare-priv-owner@example.com", "compareprivowner")
+        owner_id, _ = _register_and_login(
+            client, "compare-priv-owner@example.com", "compareprivowner"
+        )
         other_id, _ = _register_and_login(client, "compare-pub@example.com", "comparepub")
         private_portfolio = _make_portfolio(owner_id, is_public=False)
         public_portfolio = _make_portfolio(other_id, is_public=True)
@@ -539,7 +615,9 @@ class TestCompare:
         # data point that doesn't exist (see analytics_service's
         # compute_allocation_diff None-side handling).
         synced_user, _ = _register_and_login(client, "compare-synced@example.com", "comparesynced")
-        unsynced_user, _ = _register_and_login(client, "compare-unsynced@example.com", "compareunsynced")
+        unsynced_user, _ = _register_and_login(
+            client, "compare-unsynced@example.com", "compareunsynced"
+        )
         synced_portfolio = _make_portfolio(synced_user, is_public=True)
         unsynced_portfolio = _make_portfolio(unsynced_user, is_public=True)
         db.session.add(self._snapshot(synced_portfolio.id, 20000, {"Financials": 1.0}, 10, 0.15))
