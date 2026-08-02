@@ -40,7 +40,7 @@ concurrency:
 jobs:
   guard:
     name: Confirm intent
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     steps:
       - name: Check confirmation
         if: ${{ github.event.inputs.confirm != 'deploy' }}
@@ -51,7 +51,7 @@ jobs:
   migrate:
     name: Run migrations
     needs: guard
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     environment: production
     defaults:
       run:
@@ -84,7 +84,7 @@ jobs:
   deploy:
     name: Deploy API + worker
     needs: migrate
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     environment: production
     steps:
       - uses: actions/checkout@v4
