@@ -33,7 +33,7 @@ from app.schemas.auth import LoginSchema, RegisterSchema
 from app.services import audit_service, refresh_token_service
 from app.services.auth_service import AuthError, authenticate_user, register_user
 from app.services.refresh_token_service import RefreshReuseError, RefreshSessionInvalidError
-from app.utils.responses import error, success
+from app.utils.responses import error, format_validation_error, success
 
 auth_bp = Blueprint("auth", __name__)
 
@@ -52,7 +52,7 @@ def register():
     try:
         data = _register_schema.load(request.get_json(silent=True) or {})
     except ValidationError as exc:
-        return error("VALIDATION_ERROR", str(exc.messages), 400)
+        return error("VALIDATION_ERROR", format_validation_error(exc.messages), 400)
 
     try:
         user = register_user(
@@ -81,7 +81,7 @@ def login():
     try:
         data = _login_schema.load(request.get_json(silent=True) or {})
     except ValidationError as exc:
-        return error("VALIDATION_ERROR", str(exc.messages), 400)
+        return error("VALIDATION_ERROR", format_validation_error(exc.messages), 400)
 
     try:
         user = authenticate_user(email=data["email"], password=data["password"])

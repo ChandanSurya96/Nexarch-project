@@ -22,7 +22,7 @@ carried forward from a previous entry.
 |---|---|
 | **Project stage** | **Beta Candidate** |
 | **Current phase** | None in progress — Phase 2.5 closed, engineering deliberately stopped |
-| **Last completed work** | Frontend slice: design system + marketing landing page (ADR-048–050) |
+| **Last completed work** | Demo-completion polish, batches 1–3 (UX, accessibility, validation copy) |
 | **Current branch** | `feature/design-system-and-landing-page` |
 | **Open PRs** | [#13](https://github.com/ChandanSurya96/Nexarch-project/pull/13) — design system + landing page. `MERGEABLE`, CI did not run (see Blockers) |
 | **Latest merged work** | PR #12 — Blacksmith CI runner migration (2026-08-02), on `origin/main` |
@@ -44,11 +44,11 @@ Launch readiness ██████░░░░  65%
 
 **How these were derived** — so they can be argued with rather than inherited:
 
-- **Backend 95%** — 326 tests pass, lint and format clean, five hardening slices
+- **Backend 95%** — 334 tests pass, lint and format clean, five hardening slices
   done. Short of 100% because exactly **one** broker adapter (Upstox) is on
   `main`; the Dhan adapter exists only on an unpushed local branch (see Blockers).
 - **Frontend 85%** — every route composes from the design system, the landing
-  page ships, 42 tests pass. Held down by thin test coverage relative to the
+  page ships, 45 tests pass. Held down by thin test coverage relative to the
   backend, and the UI debt in [TECHNICAL_DEBT.md](./TECHNICAL_DEBT.md).
 - **Infrastructure 60%** — `docker compose` works locally and CI is fully
   written, but **CI has not produced a passing run since 2026-07-31**, and
@@ -67,7 +67,7 @@ Launch readiness ██████░░░░  65%
 
 | | |
 |---|---|
-| Tests | **326 passing**, 0 failing (`pytest`, 3m37s) |
+| Tests | **334 passing**, 0 failing (`pytest`) |
 | Lint | `ruff check app/` — clean |
 | Format | `black --check app/` — clean, 67 files |
 | Migrations | 8 (`0001` → `0008`), Alembic |
@@ -89,7 +89,7 @@ not files in this repository.
 
 | | |
 |---|---|
-| Tests | **42 passing** across 12 files (`vitest`) |
+| Tests | **45 passing** across 13 files (`vitest`) |
 | Routes | 9 — `/`, `/login`, `/register`, `/broker-callback`, `/discover`, `/library`, `/compare`, `/profile`, `/portfolios/[id]` |
 | Design system | Every route composes from `components/ui` (ADR-048) |
 | Landing page | `/`, recreated from Figma, tokens scoped to `.landing` (ADR-049) |
@@ -151,8 +151,8 @@ account, which is the founder's.
 2.5 Slice 4 existed to establish — that `main` is always verified against real
 Postgres and Redis — is not currently in force.
 
-**This does not indicate a code problem.** The full suite passes locally: 326
-backend tests and 42 frontend tests, verified today.
+**This does not indicate a code problem.** The full suite passes locally: 334
+backend tests and 45 frontend tests, verified today.
 
 ### 2. Local `main` is 4 commits behind `origin/main`
 
@@ -222,13 +222,13 @@ explicitly asked.
 
 | Check | Where | Status | Verified |
 |---|---|---|---|
-| Backend tests | `apps/api` — `pytest` | **326 passed** | 2026-08-04 |
+| Backend tests | `apps/api` — `pytest` | **334 passed** | 2026-08-04 |
 | Backend lint | `ruff check app/` | clean | 2026-08-04 |
 | Backend format | `black --check app/` | clean, 67 files | 2026-08-04 |
-| Frontend tests | `apps/web` — `npm test` | **42 passed**, 12 files | 2026-08-04 |
+| Frontend tests | `apps/web` — `npm test` | **45 passed**, 13 files | 2026-08-04 |
 | Frontend lint | `npm run lint` | clean | 2026-08-03 |
 | Frontend types | `npm run type-check` | clean | 2026-08-03 |
-| Frontend build | `npm run build` | succeeds | 2026-08-03 |
+| Frontend build | `npm run build` | succeeds, shared JS 106 kB | 2026-08-04 |
 | **CI pipeline** | GitHub Actions | **not running — see Blockers** | 2026-08-04 |
 
 Backend tests require `docker compose up -d` first.
