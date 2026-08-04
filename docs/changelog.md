@@ -10,6 +10,67 @@ Nothing pending beyond what's logged below — this section stays as the running
 
 ---
 
+## [2026-08-04] — Documentation architecture audit
+
+No code changed. The documentation set was restructured so that volatile state lives in one place, and every reality-dependent claim was re-verified against the implementation. Five statements turned out to be false and are corrected below — three of them had been wrong for months.
+
+### Added
+- **[CURRENT_STATE.md](./CURRENT_STATE.md)** — the canonical snapshot of the repository *today*: stage, per-area status, open PRs, blockers, priorities, a maturity breakdown, and the current test/lint/CI results with the date each was measured. Volatile state now has one owner instead of being spread across `README.md`, `roadmap.md` and `CLAUDE.md`. Ends with the recommended reading order for a fresh session, ordered volatile → stable.
+- **[TECHNICAL_DEBT.md](./TECHNICAL_DEBT.md)** — 15 verified debt items across backend, frontend, infrastructure, documentation and product, each with description, why it exists, impact, suggested fix and priority. Every item cites a file, a line, or a measurement; nothing was recorded on suspicion. Closes with the four items that need a founder decision rather than engineering.
+- **[OPERATIONAL_GOTCHAS.md](./OPERATIONAL_GOTCHAS.md)** — the traps that have actually cost time here: the `apps/web` submodule workflow, the Black config-root trap, the absent Prettier, `next dev` versus `next build`, the two backend test preconditions, Postgres ENUM migrations, and the `git show rev:path` failure in Git Bash.
+- **`Last verified: YYYY-MM-DD`** blocks on the six documents whose accuracy depends on the code rather than on philosophy. `broker-integrations.md` gets a split block, because its implementation status and its broker-terms research age at completely different rates.
+
+### Fixed — documentation that disagreed with the implementation
+- **`docs/README.md` claimed Phase 2 shipped "the Dhan integration".** It did not. `integrations/broker/` contains only `base.py`, `registry.py` and `upstox.py`, and the registry registers `upstox` alone. The work exists as commit `81f5e20` on the local branch `feature/milestone-8-dhan-broker`, **unmerged and unpushed to origin** — so it lives on one machine. `changelog.md` had recorded this accurately at the time; the status summary had not. Nexarch supports exactly **one** broker in any deployable state.
+- **`api.md` documented two endpoints that don't exist** — `PATCH /api/v1/users/me` and `GET /api/v1/users/:username`. Verified by enumerating every route decorator in `app/routes/`. `users_bp` registers exactly three routes: `/me`, `/me/following`, `/me/portfolio`. Both are now listed as not implemented, with a note on what would need deciding to add them.
+- **`architecture.md` listed a `strategy_categories` blueprint** that has never existed. `strategy-categories` is a route on the discovery blueprint. The real list is seven blueprints, and `health` was missing from it.
+- **`architecture.md` said portfolio-health metrics are cached in Redis.** They aren't — `analytics_service.py` touches Redis nowhere. They're computed on sync and **persisted in Postgres** on the snapshot row, which is what makes the history and comparison endpoints possible. A TTL cache would be the wrong storage for them.
+- **`security.md` said no error-tracking service was wired and that an incident-response runbook "should exist".** Both were superseded by the Deployment slice: Sentry is wired (inert without a DSN, ADR-041), and `operations.md` has carried an incident-response runbook since ADR-039–043.
+- **`development-guide.md` claimed "ESLint + Prettier, run in CI and as a pre-commit hook".** Prettier is not a dependency, has no config, and there are no pre-commit hooks anywhere. This claim is why `npx prettier` was reached for once and reformatted 26 files at 80 columns.
+- **`roadmap.md` marked Phase 0 as *(current)***, four phases after it stopped being current, and listed two Phase 2 items — additional brokers, and Watchlists — that were never delivered. Both are now marked, with the Watchlists question ("is this meaningfully different from follows?") stated rather than dropped.
+
+### Changed
+- **`CLAUDE.md` refactored into a stable operating manual** — philosophy, non-negotiables, working process, repository structure, architecture rules, conventions, operational rules, commands, and a definition of done. All volatile state moved to `CURRENT_STATE.md`; it now opens by pointing there.
+- **`docs/README.md` reduced to navigation.** The status block moved to `CURRENT_STATE.md` and the changelog-style entries were removed as duplicates of `changelog.md`. It gains an explicit **documentation-boundaries table** naming what each document does and does not own.
+- **`architecture.md`'s system diagram now says it shows the intended shape, not the built one** — six brokers and the Account Aggregator path are what the adapter abstraction exists to support, not what runs. The sync flow gained the windowed fan-out (ADR-046) and `/health/sync` (ADR-047), neither of which had reached this document.
+- `security.md` gained the login-timing guarantee (122x → 1.08x, measured), which had been recorded in ADRs and the changelog but never in the security posture itself.
+
+### Notes
+- **Measured during the audit, not carried forward:** 326 backend tests pass (3m37s), 42 frontend tests pass across 12 files, `ruff` and `black --check` both clean across 67 files. Backend figures require `docker compose up -d`.
+- **CI has not produced a passing run since 2026-07-31.** Every run since — including PR #13's — sat queued until cancelled, under both `ubuntu-latest` and the Blacksmith runner labels. No job ever started, so nothing failed on code. The cause is most likely account-level and can only be confirmed from the GitHub account. Recorded in `CURRENT_STATE.md` as the top blocker.
+- Two claims were verified by breaking them deliberately and restoring: removing `apps/api/.env` aborts pytest during **collection** (not "~38 individual failures", as had been believed), and stopping Docker turns 61 tests into `NoneType` errors that read as application bugs.
+
+---
+
+## [2026-08-04] — Frontend: Design System & Marketing Landing Page
+
+Presentation work, running alongside the operational pre-beta list rather than reopening engineering hardening. **No backend, API, routing, auth or business-logic change.** Lives in the `apps/web` submodule (`ChandanSurya96/nexarch-web`) across two commits; this repo carries the pointer bump. See ADR-048 through ADR-050.
+
+### Added
+- **Composition primitives** (ADR-048) — `components/ui` now owns the page shell (`PageContainer`, `ContentWidth`, `PageHeader`, `PageSection`, `SectionTitle`, `SectionDivider`), the card look (`Surface`, `DataCard`, `InfoRow`/`InfoList`), every figure (`Metric`, `Eyebrow`, `StatCard`), the auth shell (`AuthLayout`, `Field`) and loading states (`Skeleton` presets). Every route was migrated onto them; `Card`, `Figure`, `Section`, the standalone `StatCard` and `PortfolioFingerprint` were deleted as duplicates. The type scale is expressed as roles rather than per-screen pixel values.
+- **Portfolio Identity Strip** — a portfolio's sector mix drawn to scale as one band, in three variants, sharing `lib/sectorColors.ts` with the donut chart and the holdings-table dots so the three views reinforce one legend. It renders **nothing** when allocation data is absent: no placeholder, no equal-weight fallback. The `tiny` variant is consequently unused, because the discovery and library endpoints don't return `sector_allocation` — the four backend fields blocking specific UI are now listed in [design-system.md](./design-system.md).
+- **Marketing landing page** at `/` (ADR-049), recreated from a Figma source: nine sections in `components/landing/`, each its own file. The fingerprint visual is **computed, not drawn** — concentric contour rings generated from sector weights via a sine envelope — so it is exact at any size and costs no image request. `SiteNav` returns `null` on `/`, which now supplies its own navigation.
+- **`lib/format.ts`** — one place for `Intl` formatting. Percentages pin `minimumFractionDigits` equal to `maximumFractionDigits`, so figures stay aligned down a column instead of ragged.
+- **Framer Motion** (ADR-050), confined to the landing route and loaded through `LazyMotion` + `m` so only `domAnimation` ships. Route JS **49.2 kB → 38.2 kB** against a direct `motion` import; shared JS unchanged at 106 kB. This supersedes the "motion is CSS, not Framer Motion" note recorded a few days earlier, and restores what `design-system.md` originally specified.
+
+### Fixed
+- **Seven WCAG AA contrast failures in the Figma spec itself**, which had never had a contrast pass run against it. The worst two: `#fff` on the `#6C8EFF` accent fill — the **primary call to action** — measures **2.60:1**, and the spec's `#3E4250` tertiary text measures **1.97:1** on the page background. Each is corrected against a measured ratio, commented in place with both numbers.
+- **`--text-tertiary` in the product palette was below AA.** Estimated at 4.6:1, it measured **4.09:1**; now `#828291`. Caught by sweeping the live DOM, not by arithmetic — which was wrong twice, the second time by validating a corrected token against only two of the four surfaces it appears on. Contrast is now measured with full ancestor alpha compositing; a first sweep that ignored alpha reported `ratio: 1` false positives by comparing elements against themselves.
+- **`/profile` rendered no `<main>`** while `RequireAuth` showed its fallback, which made the global skip link a dead link on every guarded route (WCAG 2.4.1).
+- **Comparison table columns were asymmetric** (154px vs 147px) because `table-layout: auto` sizes by content — a side-by-side comparison that isn't visually even undermines the neutrality the feature exists to convey. Now `table-fixed`.
+- A `focus-visible:outline-none` with no replacement style, introduced during the migration, removed from `InvestorCard`.
+
+### Changed
+- Two pieces of Figma content overridden deliberately, both for the same reason the product refuses to invent a sector allocation: sample verification records attributed to **real named public figures** (including a sitting regulator) against invented filing references were replaced with unmistakably fictional ones, and a "BROKER VERIFIED" line naming a broker Nexarch does not integrate now names one it does.
+
+### Notes
+- **Known copy issue, flagged not fixed:** the landing page's broker-flow section names four brokers, two of which aren't built. Settle before the page is public.
+- **Verification was against the Figma source's numeric values** — every size, weight, tracking and colour confirmed in the live DOM — not a side-by-side pixel diff. Strong evidence for type and spacing; it would not catch a compositional misreading.
+- Verified across 375 / 768 / 1024 / 1440, with lint, typecheck, 42 tests and a production build green.
+- Two self-inflicted formatting incidents, both now written into [development-guide.md](./development-guide.md): `npx prettier` reformatted 26 files at 80 columns despite not being a dependency and having no config, and `black` given a path outside `apps/api` reformatted 68 files at line-length 88 — the same config-root trap recorded in the previous entry, hit a second time.
+
+---
+
 ## [2026-07-31] — Phase 2.5, Slice 5: Review Fixes & Operational Hardening — **Beta Candidate**
 
 Closes the engineering review's findings. No new product surface; this is the last hardening slice before the first real deployment.

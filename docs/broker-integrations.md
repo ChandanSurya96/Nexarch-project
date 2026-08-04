@@ -1,5 +1,18 @@
 # Broker Integrations
 
+**Last verified: 2026-08-04** — but the two halves of this document age very
+differently, so treat them differently:
+
+- **Implementation status** (which adapters exist) was verified against
+  `apps/api/app/integrations/broker/` on this date. **Only Upstox has an adapter
+  on `main`.** A Dhan adapter exists on an unmerged, unpushed branch — see
+  [CURRENT_STATE.md](./CURRENT_STATE.md).
+- **Broker API terms, pricing and rate limits** below were researched in
+  **July 2026** and have *not* been re-verified since. This is the fastest-moving
+  information in the documentation set. **Re-check every figure against the
+  broker's own current documentation before writing an adapter or signing
+  anything** — do not treat the table below as current.
+
 **Purpose:** This document covers how Nexarch connects to brokerage accounts to sync holdings — supported brokers, auth flows, data mapping, refresh strategy, and security. This is the most research-dependent document in the set, because broker API availability and terms are exactly the kind of thing that changes between when a concept note is written and when code gets built. **Everything below was checked against current sources in July 2026** rather than assumed; broker terms should be re-verified again before signing any integration agreement, since this space moves fast.
 
 ---

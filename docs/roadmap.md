@@ -2,6 +2,8 @@
 
 **Purpose:** This is the phase-by-phase plan from MVP to long-term vision — what gets built, in what order, and just as importantly, what is explicitly *not* being built yet and why. See [feature-backlog.md](./product/feature-backlog.md) for ticket-level detail within each phase, and [decisions.md](./decisions.md) for the reasoning behind sequencing calls.
 
+**This document owns the future.** For where the project actually stands today — what's blocked, what's next, today's test and CI results — see [CURRENT_STATE.md](./CURRENT_STATE.md). Phase completion markers here were audited against the implementation on 2026-08-04.
+
 ---
 
 ## How to Read This
@@ -26,7 +28,7 @@ graph LR
 
 ---
 
-## Phase 0 — Architecture & Documentation *(current)*
+## Phase 0 — Architecture & Documentation *(done)*
 
 **Goal:** Nobody writes application code against an undocumented, unreviewed plan.
 
@@ -66,13 +68,13 @@ Explicitly excluded from Phase 1 (per founding scope, restated so it doesn't qui
 
 ## Phase 2 — Advanced Analytics & Comparisons
 
-**Goal:** Discovery becomes genuinely useful, not just a directory.
+**Goal:** Discovery becomes genuinely useful, not just a directory. **The goal was met and the phase closed** — but two listed items were not delivered, marked below rather than quietly dropped (audited 2026-08-04).
 
-- Additional broker integrations (see [broker-integrations.md](./broker-integrations.md) for the prioritized list)
-- Portfolio comparison (side-by-side)
-- Strategy categorization (rules-based, not ML yet)
-- Watchlists (follow without needing an account relationship)
-- Deeper portfolio-health metrics — this is also where a market-data dependency for volatility gets resolved (see [database.md](./database.md))
+- **Deeper portfolio-health metrics** *(done — ADR-024)*. The market-data dependency for volatility was resolved here (see [database.md](./database.md)).
+- **Portfolio comparison, side-by-side** *(done — ADR-026/027)*.
+- **Strategy categorization**, rules-based, not ML *(done — ADR-028)*.
+- **Additional broker integrations** *(built, **not on `main`**)*. A Dhan adapter exists as commit `81f5e20` on the local branch `feature/milestone-8-dhan-broker`, which is unmerged and unpushed — so the deployable state supports exactly one broker, Upstox. Needs a founder decision: merge, or move to future work. See [TECHNICAL_DEBT.md](./TECHNICAL_DEBT.md) B2.
+- **Watchlists** (follow without needing an account relationship) *(**not built**)*. `grep -r watchlist apps/api/app` returns nothing. Follows shipped in Phase 1 and cover most of the need, which is why the phase closed on its goal without this — per this document's own rule that a phase is done when its goal is demonstrably true, not when every item is ticked. Open question: are watchlists meaningfully different from follows? If not, strike the line.
 
 ## Phase 2.5 — Production Hardening
 
@@ -101,6 +103,17 @@ Engineering hardening stops here deliberately. What remains before real users is
 - **Provisioning itself** — accounts, payment details, and real secret values are the founder's to create and hold. Every config, workflow, script, and runbook that consumes them is written and waiting.
 
 Beta launch follows this phase, not Account Aggregator or additional-broker work.
+
+## Frontend — Design System & Landing Page *(done — ADR-048 through ADR-050)*
+
+**Goal:** a beta invitee's first two impressions — the page they land on and the dashboard they reach — should look like one product built by one team.
+
+This is presentation work that runs alongside the operational list above, not a reopening of engineering hardening and not new product surface. No backend, API, routing, auth or business logic changed. Two things were done:
+
+1. **The product UI was rebuilt onto composition primitives** (ADR-048). Every route previously defined its own shell, card, heading and metric styling, so no two shared a column width or a type scale — page titles topped out at 20px while section headings rendered smaller and dimmer than their own body text. Five duplicate components were deleted. The signature element, the Portfolio Identity Strip, renders **nothing** when allocation data is absent rather than falling back to an equal-weight shape: on a product whose whole claim is that what you see is what someone actually holds, an invented composition is worse than an absent element. [design-system.md](./design-system.md) also lists the four backend fields currently blocking specific UI.
+2. **A marketing landing page was recreated from a Figma source** (ADR-049, ADR-050). A WCAG audit of the spec itself found seven contrast failures — the primary call to action was white on the accent fill at **2.60:1** — each corrected against a measured ratio rather than an eyeballed one. Two content decisions overrode the spec deliberately: sample records naming real public figures became clearly fictional ones, and a broker Nexarch doesn't integrate was removed from a line asserting verification.
+
+What this did **not** do: it did not close the UI debt listed at the end of [design-system.md](./design-system.md), and it did not touch the four missing backend fields that block the highest-value placements.
 
 ## Phase 3 — AI-Assisted Insight
 

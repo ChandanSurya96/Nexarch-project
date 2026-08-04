@@ -10,7 +10,7 @@
 
 | Component | Platform | Notes |
 |---|---|---|
-| Frontend (Next.js) | Vercel | Deploys from its own Git integration, not from our workflow |
+| Frontend (Next.js) | Vercel | Deploys from its own Git integration, not from our workflow. **Connect Vercel to `ChandanSurya96/nexarch-web`, not to this repo** — `apps/web` is a submodule, so this repo holds only a pointer and the frontend source lives there |
 | API (Flask/gunicorn) | Railway | `apps/api/Dockerfile`, `CMD` = gunicorn |
 | Sync worker (Celery) | Railway | Same image, `celery -A app.celery_app worker` |
 | Beat scheduler (Celery) | Railway | Same image, `celery -A app.celery_app beat` |
