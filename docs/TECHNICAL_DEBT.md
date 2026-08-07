@@ -1,6 +1,6 @@
 # Technical Debt
 
-**Last verified: 2026-08-04**
+**Last verified: 2026-08-07**
 
 **Purpose:** the known, *verified* engineering debt in this repository — what it
 is, why it exists, what it costs, and what fixing it looks like. This document
@@ -25,7 +25,7 @@ evidence — a file and line, a measurement, or a reproduction.
 
 ## Backend
 
-### B1 · A Redis outage returns 500 from every non-health route — **P1**
+### B1 · A Redis outage returns 500 from every non-health route — ✅ **RESOLVED 2026-08-07**
 
 **What.** `flask-limiter` is initialised with `default_limits=["100 per minute"]`
 ([`app/extensions.py:38`](../apps/api/app/extensions.py)), which applies to every
@@ -47,13 +47,21 @@ is down", including endpoints that need no Redis at all. `/health` stays green
 throughout, so the load balancer keeps routing traffic to instances that 500 —
 which is the worst combination.
 
-**Suggested fix.** Make limiter storage failure fail *open*: either a
-`flask-limiter` storage wrapper that swallows connection errors and permits the
-request, or catch the error in an app-level `before_request` guard. Failing open
-loses rate limiting during an outage — the correct trade, since the alternative
-is a total outage, but it should be logged loudly and stated in
-[security.md](./security.md). Add a test that patches the storage to raise and
-asserts a normal 200.
+**Resolved.** `Limiter(..., swallow_errors=True)` in `app/extensions.py`. The
+limiter now fails *open*: a store outage loses rate limiting for its duration
+rather than taking the whole API down, and flask-limiter logs each swallowed
+error so the condition stays visible. This generalises to every blueprint the
+fix ADR-034 applied to `health_bp` alone.
+
+Reproduced live before fixing, not just reasoned about: Docker Desktop stopped
+mid-audit on 2026-08-07 and `GET /portfolios/compare` returned 500 with
+`redis.exceptions.ConnectionError` raised from `_check_request_limit`, while
+`/health` stayed green. `tests/test_rate_limit_degradation.py` (4 tests) patches
+the storage to raise the same way; reverting `swallow_errors` was confirmed to
+fail 3 of them with the identical traceback, so the tests catch the regression
+rather than merely passing.
+
+The ID is kept rather than renumbered so existing references stay valid.
 
 ### B2 · One broker adapter is deployable — **P1 (needs a founder decision)**
 
@@ -98,7 +106,7 @@ versioned format was designed for this — the migration is a re-wrap pass
 
 ### B4 · The backend suite requires live Postgres and Redis, and fails opaquely without them — **P3**
 
-**What.** With Docker down, 61 of 326 tests fail with
+**What.** With Docker down, 61 of 338 tests fail with
 `TypeError: 'NoneType' object is not subscriptable` — a Redis connection timeout
 surfacing as an application-shaped error several frames from its cause.
 Verified 2026-08-04, both ways.
@@ -137,7 +145,7 @@ the page is next touched, not as its own task.
 
 ### F2 · Frontend test coverage is thin relative to the backend — **P2**
 
-**What.** 42 tests across 12 files, against 326 backend tests. Verified by
+**What.** 45 tests across 13 files, against 338 backend tests. Verified by
 running both 2026-08-04.
 
 **Why it exists.** The frontend was built route-first through Phase 1, then
