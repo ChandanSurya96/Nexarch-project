@@ -1,12 +1,15 @@
 # Security
 
+**Last verified: 2026-08-04** — auth, CSRF, CORS, secrets and monitoring claims checked against `apps/api`. The compliance sections are a standing checklist, not a verified state, and are **not** a substitute for legal review.
+
 **Purpose:** Authentication and authorization architecture, encryption and secrets handling, API security, and the compliance considerations specific to handling financial account data in India. This document should be read before implementing any broker-connection or auth code, not after. See [broker-integrations.md](./broker-integrations.md) for the broker-specific token handling this builds on.
 
 ---
 
 ## Authentication
 
-- **Passwords:** hashed with bcrypt or argon2. Never stored or logged in plaintext, never included in any error message or audit log payload.
+- **Passwords:** hashed with bcrypt. Never stored or logged in plaintext, never included in any error message or audit log payload.
+- **Login does not leak whether an email is registered.** `authenticate_user` performs exactly one bcrypt verification on every attempt, against a per-process dummy hash when the email is unknown — previously the `or` short-circuit skipped bcrypt entirely for unknown addresses, answering in 2.8 ms against 338.8 ms for a real account: a **122x** account-enumeration oracle that identical response bodies did nothing to hide. Measured after the fix: **1.08x**. `scripts/benchmark_login_timing.py` reproduces both numbers. The dummy hash derives from the app's own configured cost factor, so raising `BCRYPT_LOG_ROUNDS` cannot silently reopen the gap.
 - **Access tokens:** JWT, short-lived (~15 min), sent as `Authorization: Bearer`.
 - **Refresh tokens:** longer-lived, stored as httpOnly, secure, SameSite cookies — never in `localStorage` or any JS-accessible storage, so a client-side XSS bug can't exfiltrate a long-lived credential.
 - **Rotation:** refresh tokens rotate on use; a reused (already-consumed) refresh token invalidates the whole session family, which catches token theft rather than just tolerating it silently (ADR-030 in [decisions.md](./decisions.md)). A short grace window tolerates the immediately-previous token from a benign concurrent-tab race without treating it as theft — only a token stale by more than one rotation kills the family.
@@ -65,6 +68,8 @@ None of this blocks Phase 1–3 work. It's a standing constraint on copy and fea
 ## Incident Response Basics
 
 - All broker connection events (connect, disconnect, sync, error, token refresh) logged to `audit_logs` (see [database.md](./database.md)).
-- **Structured (JSON) application logging is real now** (ADR-034 in [decisions.md](./decisions.md)) — every log line carries a request-id/user-id for correlation, and every sync failure path (token-expiry, rate-limit, generic API error, and previously-uncaught unexpected errors) writes both a log line and an `audit_logs` "error" event consistently. **Alerting on anomalies (a spike in failed syncs, a spike in auth failures) is still not built** — the logs above are designed to be pipeable into whatever monitoring/alerting tool gets chosen at deployment time (see `docs/roadmap.md` "Phase 2.5," Deployment slice), but no external service is wired in yet, and there's nowhere for an alert to go until one is.
-- A documented incident-response runbook (who's on call, how a broker-token leak would be contained and disclosed) should exist before real user broker tokens are stored in production — this is a pre-launch checklist item, not a someday item.
+- **Structured (JSON) application logging is real** (ADR-034 in [decisions.md](./decisions.md)) — every log line carries a request-id/user-id for correlation, and every sync failure path (token-expiry, rate-limit, generic API error, and previously-uncaught unexpected errors) writes both a log line and an `audit_logs` "error" event consistently.
+- **Error tracking is wired but inert** (ADR-041) — `app/monitoring.py` initialises Sentry with `send_default_pii=False` plus a scrubber, because request bodies here carry passwords and broker OAuth codes. It does nothing at all unless `SENTRY_DSN` is set, and no DSN exists yet because nothing is deployed.
+- **Anomaly alerting (a spike in failed syncs, a spike in auth failures) is still not built.** What exists is the signal, not the alert: structured logs, and `GET /health/sync` (ADR-047), which makes the sync pipeline's worst failure mode — silence — externally observable by any uptime checker. Wiring an actual alert destination needs a deployed environment.
+- **A documented incident-response runbook now exists** — [operations.md](./operations.md) "Incident response", added in the Deployment slice (ADR-039–043). It covers containment and disclosure for a broker-token leak, which is the scenario this section was originally written to demand. It has not been exercised against a real incident.
 - Independent security review / basic penetration test recommended before public launch, given the sensitivity of what's being stored.

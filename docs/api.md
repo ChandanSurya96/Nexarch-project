@@ -1,5 +1,7 @@
 # API
 
+**Last verified: 2026-08-04** — every endpoint below was checked against the route decorators in `apps/api/app/routes/`. Two documented endpoints did not exist and are now marked as such.
+
 **Purpose:** REST conventions, endpoint structure, auth flow, and response formats for the Nexarch backend. Frontend and backend should treat this as the contract between them — if an endpoint's actual behavior differs from this document, that's a bug in one of the two, not a reason to just adapt silently. See [architecture.md](./architecture.md) for the system this sits inside, and [security.md](./security.md) for the auth model in depth.
 
 ---
@@ -121,10 +123,14 @@ This endpoint is for a monitoring/uptime check to poll, **not** for load-balance
 ### Users & Profiles
 ```
 GET    /api/v1/users/me
-PATCH  /api/v1/users/me
-GET    /api/v1/users/:username            # public profile
 GET    /api/v1/users/me/portfolio         # the caller's own portfolio, or null
+GET    /api/v1/users/me/following         # paginated — see Follows below
 ```
+
+**Not implemented**, though earlier revisions of this document listed them as if they were (corrected 2026-08-04 by enumerating the route decorators in `app/routes/users.py`):
+
+- `PATCH /api/v1/users/me` — there is no user-update endpoint. The only user-editable state today is a portfolio's visibility, via `PATCH /api/v1/portfolios/:id`.
+- `GET /api/v1/users/:username` — there is no public profile keyed by username. Public identity is a *portfolio* concept here, not a user one: profiles are reached at `GET /api/v1/portfolios/:id/profile`, and the Public Investor Library resolves its own `:slug`. Adding one would need a decision about whether a user is publicly addressable independently of their portfolio.
 
 `/users/me/portfolio` exists because every portfolio endpoint is keyed by `portfolio_id`, and there's no other way for the frontend to discover the signed-in user's own id. It returns the same shape as the Portfolio Detail Response below — or `data: null` (200, not a 404) when the user has no portfolio yet. That's a normal, expected state, not an error: a `Portfolio` row is only created lazily on a broker connection's first successful sync (see [broker-integrations.md](./broker-integrations.md)), so every new signup — and even a user who just finished connecting a broker seconds ago — legitimately has none for a little while. See ADR-019 in [decisions.md](./decisions.md).
 

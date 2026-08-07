@@ -15,7 +15,7 @@ from marshmallow import ValidationError
 from app.schemas.discovery import DiscoveryQuerySchema
 from app.schemas.strategy_category import StrategyCategorySchema
 from app.services.discovery_service import list_investors, list_strategy_categories
-from app.utils.responses import error, success
+from app.utils.responses import error, format_validation_error, success
 
 discovery_bp = Blueprint("discovery", __name__)
 
@@ -28,7 +28,7 @@ def get_investors():
     try:
         params = _query_schema.load(request.args.to_dict())
     except ValidationError as exc:
-        return error("VALIDATION_ERROR", str(exc.messages), 400)
+        return error("VALIDATION_ERROR", format_validation_error(exc.messages), 400)
 
     results, total = list_investors(
         params["strategy"], params["sort"], params["page"], params["per_page"]

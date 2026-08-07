@@ -35,7 +35,7 @@ from app.schemas.portfolio import CompareQuerySchema, PortfolioSchema, Portfolio
 from app.services import portfolio_comparison_service, portfolio_profile_service
 from app.services.follow_service import follow, unfollow
 from app.services.portfolio_service import PortfolioAccessError, update_visibility
-from app.utils.responses import error, success
+from app.utils.responses import error, format_validation_error, success
 
 portfolios_bp = Blueprint("portfolios", __name__)
 
@@ -87,7 +87,7 @@ def get_portfolio_activity(portfolio_id: uuid.UUID):
     try:
         params = _optional_pagination_schema.load(request.args.to_dict())
     except ValidationError as exc:
-        return error("VALIDATION_ERROR", str(exc.messages), 400)
+        return error("VALIDATION_ERROR", format_validation_error(exc.messages), 400)
 
     try:
         entries, pagination = portfolio_profile_service.get_activity_view(
@@ -107,7 +107,7 @@ def get_portfolio_history(portfolio_id: uuid.UUID):
     try:
         params = _optional_pagination_schema.load(request.args.to_dict())
     except ValidationError as exc:
-        return error("VALIDATION_ERROR", str(exc.messages), 400)
+        return error("VALIDATION_ERROR", format_validation_error(exc.messages), 400)
 
     try:
         entries, pagination = portfolio_profile_service.get_history_view(
@@ -136,7 +136,7 @@ def compare_portfolios():
     try:
         params = _compare_query_schema.load(request.args.to_dict())
     except ValidationError as exc:
-        return error("VALIDATION_ERROR", str(exc.messages), 400)
+        return error("VALIDATION_ERROR", format_validation_error(exc.messages), 400)
 
     try:
         return success(portfolio_comparison_service.compare(params["ids"], _current_user_id()))
@@ -150,7 +150,7 @@ def patch_portfolio(portfolio_id: uuid.UUID):
     try:
         data = _update_schema.load(request.get_json(silent=True) or {})
     except ValidationError as exc:
-        return error("VALIDATION_ERROR", str(exc.messages), 400)
+        return error("VALIDATION_ERROR", format_validation_error(exc.messages), 400)
 
     user_id = uuid.UUID(get_jwt_identity())
     try:

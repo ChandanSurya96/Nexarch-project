@@ -35,7 +35,27 @@ def _rate_limit_key() -> str:
     return identity or get_remote_address()
 
 
-limiter = Limiter(key_func=_rate_limit_key, default_limits=["100 per minute"])
+limiter = Limiter(
+    key_func=_rate_limit_key,
+    default_limits=["100 per minute"],
+    # Fail open when the rate-limit store is unreachable (TECHNICAL_DEBT B1).
+    #
+    # default_limits applies to every route, storage is Redis outside tests, and
+    # flask-limiter evaluates limits in before_request — ahead of any route
+    # code. So a Redis outage did not merely disable rate limiting, it raised
+    # before the endpoint ran and turned *every* non-health route into a 500,
+    # including endpoints that touch neither Redis nor the limiter. Reproduced
+    # live on 2026-08-07 when the local Redis container stopped: the entire API
+    # returned 500 while /health stayed green, so a load balancer would have
+    # kept sending traffic to instances that could not serve any of it.
+    #
+    # The trade is deliberate: during a store outage requests go unmetered.
+    # That is strictly better than the whole API being down, and it is the
+    # reason health_bp's limiter.exempt (ADR-034) existed — this generalises
+    # that fix from one blueprint to all of them. flask-limiter logs each
+    # swallowed error, so the condition stays visible rather than silent.
+    swallow_errors=True,
+)
 
 
 class RedisClient:

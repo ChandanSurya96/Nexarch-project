@@ -57,3 +57,8 @@ docker-compose.override.yml
 
 # ─── Alembic ──────────────────────────────────────────────────────────────────
 # Don't ignore migrations/ — they must be tracked
+
+# Celery Beat schedule database (created at runtime by `celery beat`)
+celerybeat-schedule
+celerybeat-schedule-*
+celerybeat.pid

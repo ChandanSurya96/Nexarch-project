@@ -30,7 +30,7 @@ from app.services.broker_connection_service import (
     list_connections,
     trigger_manual_sync,
 )
-from app.utils.responses import error, success
+from app.utils.responses import error, format_validation_error, success
 
 broker_connections_bp = Blueprint("broker_connections", __name__)
 
@@ -45,7 +45,7 @@ def init():
     try:
         data = _init_schema.load(request.get_json(silent=True) or {})
     except ValidationError as exc:
-        return error("VALIDATION_ERROR", str(exc.messages), 400)
+        return error("VALIDATION_ERROR", format_validation_error(exc.messages), 400)
 
     user_id = uuid.UUID(get_jwt_identity())
     try:
@@ -62,7 +62,7 @@ def callback():
     try:
         data = _callback_schema.load(request.get_json(silent=True) or {})
     except ValidationError as exc:
-        return error("VALIDATION_ERROR", str(exc.messages), 400)
+        return error("VALIDATION_ERROR", format_validation_error(exc.messages), 400)
 
     user_id = uuid.UUID(get_jwt_identity())
     try:

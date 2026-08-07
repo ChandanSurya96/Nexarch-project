@@ -24,7 +24,7 @@ from app.schemas.portfolio import FollowingQuerySchema, PortfolioSchema
 from app.schemas.user import UserSchema
 from app.services.follow_service import list_following
 from app.services.portfolio_service import get_my_portfolio
-from app.utils.responses import error, success
+from app.utils.responses import error, format_validation_error, success
 
 users_bp = Blueprint("users", __name__)
 
@@ -60,7 +60,7 @@ def get_following():
     try:
         params = _following_query_schema.load(request.args.to_dict())
     except ValidationError as exc:
-        return error("VALIDATION_ERROR", str(exc.messages), 400)
+        return error("VALIDATION_ERROR", format_validation_error(exc.messages), 400)
 
     user_id = uuid.UUID(get_jwt_identity())
     portfolios, total = list_following(user_id, params["page"], params["per_page"])
